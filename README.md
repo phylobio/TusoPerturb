@@ -10,6 +10,10 @@ Python package with a single public API. The five benchmark heads all instantiat
 the same `head_predict` function; they differ only in which arms are enabled,
 which feature subset they consume, and how the target is shaped.
 
+![Description of Figure](tusoperturb_overview.png)
+
+![Description of Figure](performance_3_plots.png)
+
 ## Table of contents
 
 - [What's in this repo](#whats-in-this-repo)

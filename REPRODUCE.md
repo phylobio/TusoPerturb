@@ -1,186 +1,318 @@
-# Reproducing TusoPerturb results
+# Reproducing benchmark evaluations
 
-This page tells you how to reproduce the champion numerical result from
-`report.md`. The vendored reference data + `champion/params.json` pin the
-static side; you need to supply the benchmark data yourself. Every benchmark
-page in [`docs/benchmarks/`](docs/benchmarks/) restates the specific data
-you'd need to bring.
+This repository contains the TusoPerturb model code, fixed configurations, and
+static biological reference features. It does not contain the benchmark
+`AnnData` files, staged GenePT features, phenotype tables, or third-party
+scoring harnesses required to recreate the recorded benchmark values.
 
-## What "reproduce" means here
+The reproduction workflow therefore has two parts:
 
-TusoPerturb has three levels of reproducibility, in decreasing strictness:
+1. verify that the package and bundled reference data load correctly; and
+2. run the adapters inside the corresponding benchmark environment, using the
+   same datasets, splits, preprocessing, and scorer versions.
 
-1. **Byte-identity of the feature stack.** With the vendored refs in
-   `data/embeddings/` and matching Python + NumPy versions, the intermediate
-   feature matrix `E_all` is bit-identical to the values produced during
-   method development. This was verified after the 2026-07 embedding sync
-   inside the original sandbox: `E_all` (2322 × 11680) and `Y_delta`
-   (2322 × 8746) `max_abs_diff = 0.0` between the vendored-refs run and
-   the method-development-refs run. Numerical determinism across different
-   BLAS / OpenMP thread counts / NumPy versions is likely but not
-   guaranteed; if you see small (<1e-6) drift on a different toolchain,
-   that's expected and does not indicate a real difference.
-2. **Head-config parity.** With `champion/params.json` unchanged, the three
-   `HeadConfig` objects (`PRIOR_A_v2_193`, `PRIOR_R17_C`, `PRIOR_SYSTEMA`)
-   produce byte-identical output given the same input feature matrix.
-3. **Metric-level parity.** Given the same benchmark master `h5ad` and the
-   same scoring pipeline (each benchmark's published scorer), you should
-   recover the champion metric numbers to within numerical noise. Assert
-   snippets for three headline numbers are at the bottom of this page.
+Recorded three-seed means are stored in
+[`champion/params.json`](champion/params.json) and summarized in
+[`report.md`](report.md). They are reference metadata rather than executable
+test fixtures.
 
-Levels 1 and 2 are settled by this zip alone. Level 3 requires the external
-data listed below.
+## Install the package
 
-## Environment
+TusoPerturb requires Python 3.11 or newer. An editable install is recommended
+because the bundled reference data lives at the repository root.
 
-- Python 3.11+
-- Runtime deps installed via `pip install -e .` from the repo root (see
-  [pyproject.toml](pyproject.toml)).
-- No GPU required for prediction. Training the champion used CPU-only ridge
-  regression; there is no neural component to reproduce.
-
-Optional environment variables:
-
-| Var | When to set it | What it does |
-|---|---|---|
-| `TUSOPERTURB_REF_DIR` | You've moved `data/embeddings/ref/` elsewhere, or installed the wheel without the source tree. | Overrides where `orth_features_v2` reads Reactome / GO BP / Hallmark / CollecTRI / PROGENy / STRING refs from. |
-| `TUSOPERTURB_DEPMAP_DIR` | You've moved `data/embeddings/depmap_essentiality/` elsewhere. | Overrides where `feature_builder` reads DepMap essentiality parquets from. |
-| `TUSOPERTURB_MEAN_EFFECT_DIR` | You're running PerturbHD-hit outside the original method-development sandbox. | Overrides where `predict_hit` reads AUCell mean-effect parquets. |
-
-These env vars are consulted before the vendored/default paths, so you can
-force local data directories without editing code.
-
-## External data you need to bring
-
-Reproducing any of the four PerturbHD-family heads (CellSim, scPerturB,
-PerturbHD-reg, PerturbHD-hit) requires all of:
-
-- **Master `h5ad`** for each of `nadig25hepg2`, `nadig25jurkat`,
-  `replogle22k562`, `replogle22rpe1`. Sizes ~14-20 GB each. Published with
-  the original datasets — see individual benchmark pages for URLs.
-- **`gpu_stage/<dataset>/` bake** containing `E_all_genept.npy`, `Y_train.npy`,
-  `A_train.npy`, and `meta_master.h5ad`. Built from the master via the
-  perturb-2026 staging pipeline; schema is documented in
-  [`docs/benchmarks/cellsim.md`](docs/benchmarks/cellsim.md) so a determined
-  reader can build the bake independently.
-- **`perturb_2026` Python module** on `PYTHONPATH`. Both `feature_builder.py`
-  and `api.py` do lazy `from perturb_2026.…` imports for the AnnData shaping
-  step and the staged-feature loader.
-- **AUCell phenotype parquets** (`<paper_key>-h.all-all.pq`) for the
-  PerturbHD-hit head specifically. These are per-dataset from the perturb-hd
-  supplementary data.
-
-Reproducing the Systema head only requires:
-
-- **A `PanelMaster` object** from the `systema_r1` benchmarking harness for
-  each of the 7 Vinas panels. See
-  [`docs/benchmarks/systema.md`](docs/benchmarks/systema.md).
-
-## The three reproduction paths
-
-### 1. PerturbHD family (CellSim + scPerturB + PerturbHD-reg + PerturbHD-hit)
-
-For each of the 4 datasets and each of 3 seeds:
-
-```python
-import anndata as ad
-from tusoperturb.api import predict_regression, predict_regression_gene, predict_hit
-
-master = ad.read_h5ad("/path/to/masters/nadig25hepg2.h5ad")
-
-# CellSim / scPerturB heads (both use PRIOR_A_v2_193; output = pred AnnData)
-pred_cellsim = predict_regression(master, "nadig25hepg2", seed=1, head="cellsim")
-pred_scperturb = predict_regression(master, "nadig25hepg2", seed=1, head="scperturb")
-
-# PerturbHD-reg head (same config; output = pert/gene/effect long-format DataFrame)
-pred_reg = predict_regression_gene(master, "nadig25hepg2", seed=1, head="perturbhd_reg")
-
-# PerturbHD-hit head (uses PRIOR_R17_C; needs AUCell parquets)
-pred_hit = predict_hit(master, "nadig25hepg2", seed=1)
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e .
 ```
 
-Note: the regression heads' `seed` argument is a formality — `PRIOR_A_v2_193`
-is deterministic and doesn't consume it. The hit head genuinely uses it to
-select the `split-{seed}` train/test column.
+Prediction uses NumPy and scikit-learn and does not require a GPU.
 
-Score each prediction against the corresponding published scorer. Runtime
-per (dataset, seed): 2-5 minutes for the regression heads, 30-60 seconds
-for the hit head, assuming the gpu_stage bake is on local disk.
+## Configure data paths
 
-### 2. Systema (7 Vinas panels)
+Set path overrides before importing `tusoperturb`:
 
-For each of the 7 panels (`adamson`, `norman`, `tian_crispra`,
-`tian_crispri`, `xu`, `replogle_rpe1`, `replogle_k562_gwps`) and each of
-3 seeds:
+| Variable | Purpose |
+|---|---|
+| `TUSOPERTURB_REF_DIR` | Directory containing the Reactome, GO, Hallmark, PROGENy, CollecTRI, and STRING reference files. |
+| `TUSOPERTURB_DEPMAP_DIR` | Directory containing `HepG2.pq`, `Jurkat.pq`, `K562.pq`, and `RPE1.pq`. |
+| `TUSOPERTURB_MEAN_EFFECT_DIR` | Directory containing the PerturbHD phenotype Parquet files used by `predict_hit`. |
 
-```python
-from tusoperturb import predict_systema
+The first two variables are optional when running from a source checkout with
+`data/embeddings/` intact. The PerturbHD hit workflow normally requires the
+third because those phenotype tables are not bundled.
 
-# panel_master is produced by the systema_r1 harness (Vinas 2025).
-Y_test = predict_systema(panel_master, seed=1)  # (n_test_perts, n_genes) log1p post-expression
+Example:
+
+```bash
+export TUSOPERTURB_MEAN_EFFECT_DIR=/path/to/mean_effects_aucell
 ```
 
-Score `Y_test` against the ground truth for `panel_master.test_perts` using
-the systema_r1 `SEval` pipeline. Runtime per (panel, seed): 30-180 seconds
-depending on panel size (`replogle_k562_gwps` and `replogle_rpe1` are the
-slow ones).
+## Verify the local installation
 
-### 3. Aggregate + verify
-
-After running all 5 heads across all datasets × 3 seeds, aggregate to
-long-format CSV and check the three headline numbers below. The
-aggregation glue is benchmark-specific; the champion assertions are the
-canonical parity check.
-
-## Verifying reproduction
-
-After reproducing the metrics, these three asserts confirm you have
-byte-identical (or near-identical) champion parity:
-
-```python
-# Systema: adamson corr_20de
-assert abs(systema_adamson_corr_20de - 0.795273) < 1e-4, "Systema champion parity broken"
-
-# CellSim: nadig25hepg2 pearson_deltactrl_degs
-assert abs(cellsim_hepg2_pearson_deltactrl_degs - 0.6423) < 5e-4, "CellSim champion parity broken"
-
-# scPerturB: replogle22k562 pcc_delta
-assert abs(scperturb_k562_pcc_delta - 0.682) < 5e-3, "scPerturB champion parity broken"
-
-print("OK — champion parity verified.")
-```
-
-Absolute numbers from the champion run:
-
-| Benchmark  | Dataset         | Metric                    | Value               |
-|------------|-----------------|---------------------------|---------------------|
-| Systema    | adamson         | `corr_20de`               | 0.7952732835851964  |
-| CellSim    | nadig25hepg2    | `pearson_deltactrl_degs`  | 0.6423267403536010  |
-| scPerturB  | replogle22k562  | `pcc_delta`               | 0.6817649548329194  |
-
-## Sanity check without external data
-
-Even without the benchmark data, you can verify the vendored refs load
-correctly and produce the right feature-block widths:
+The following check uses only bundled annotation files and does not require a
+benchmark dataset:
 
 ```python
 from tusoperturb._deps.orth_features_v2 import load_orth_features_v2
 
-# Toy pert list — just needs valid HGNC symbols
-perts = ["TP53", "MYC", "KRAS", "BRCA1", "EGFR"]
-feats, _ = load_orth_features_v2(perts, features=('reactome', 'go_bp', 'hallmark', 'progeny', 'collectri', 'string'))
+perts = ["TP53", "MYC", "KRAS"]
+features, _ = load_orth_features_v2(
+    perts,
+    features=(
+        "reactome",
+        "go_bp",
+        "hallmark",
+        "progeny",
+        "collectri",
+        "string",
+    ),
+)
 
-# Expected widths from ARCHITECTURE.md §2 feature-block table:
-assert feats['reactome'].shape == (5, 1816)
-assert feats['go_bp'].shape    == (5, 5406)
-assert feats['hallmark'].shape == (5, 50)
-assert feats['progeny'].shape  == (5, 14)
-assert feats['collectri'].shape == (5, 1185)
-assert feats['string'].shape   == (5, 128)
-print("OK — vendored refs load and feature widths match architecture doc.")
+expected_widths = {
+    "reactome": 1816,
+    "go_bp": 5406,
+    "hallmark": 50,
+    "progeny": 14,
+    "collectri": 1185,
+    "string": 128,
+}
+
+for name, width in expected_widths.items():
+    assert features[name].shape == (len(perts), width)
 ```
 
-If this passes, you have a working feature stack. What you can't do without
-the external data is exercise the full `build_shared_features(dataset)`
-pipeline (which pulls the GenePT block from the `gpu_stage` bake) or the
-`predict_regression` / `predict_hit` heads that consume it.
+You can also exercise the predictor with synthetic data:
+
+```python
+import numpy as np
+from tusoperturb import HEAD_CONFIGS, head_predict
+
+rng = np.random.default_rng(0)
+E = rng.normal(size=(8, 11680)).astype(np.float32)
+Y_train = rng.normal(size=(5, 4)).astype(np.float32)
+train_idx = np.arange(5)
+
+Y_pred = head_predict(E, train_idx, Y_train, HEAD_CONFIGS["cellsim"])
+assert Y_pred.shape == (8, 4)
+```
+
+These checks validate package loading and array contracts. They do not validate
+benchmark preprocessing or scoring.
+
+## External requirements for shared-feature workflows
+
+CellSimBench, scPerturBench, PerturbHD regression, and PerturbHD hit prediction
+all call `build_shared_features(dataset)`. The supported dataset identifiers
+are:
+
+```text
+nadig25hepg2
+nadig25jurkat
+replogle22k562
+replogle22rpe1
+```
+
+### `perturb_2026` stage loader
+
+The external module
+`perturb_2026.loop.gpu_stage_loader` must provide
+`load_stage(dataset)`. The current TusoPerturb implementation expects the
+returned mapping to contain these keys:
+
+| Key | Expected contents |
+|---|---|
+| `E_train_genept` | Training-row GenePT matrix. The current builder reads this key for compatibility but does not otherwise use the value. |
+| `E_all_genept` | `float32` array with shape `(n_all_perts, 3072)`. |
+| `Y_train` | Training target array with shape `(n_train_perts, n_genes)`. |
+| `all_perts` | Perturbation labels in the same order as `E_all_genept`. |
+| `train_perts` | Training labels in the same row order as `Y_train`. |
+| `donor_id` | Cell-line identifier used for DepMap lookup and output construction. |
+| `mean_baseline` | Control mean-expression vector with length `n_genes`. |
+| `gene_names` | Gene labels in the same order as `Y_train` columns. |
+
+`train_perts` must be a subset of `all_perts`, and perturbation labels must
+match the labels used by the reference and phenotype tables.
+
+The on-disk layout behind `load_stage` is owned by the external
+`perturb_2026` package and is not defined by this repository.
+
+### AnnData output helper
+
+`predict_regression` also imports:
+
+```text
+perturb_2026.loop.helpers.build_pred_adata_from_matrix
+perturb_2026.loop.paths.FOLD
+```
+
+The supplied `master` object must satisfy that helper and the downstream
+benchmark scorer. TusoPerturb does not inspect the `master` object directly
+before passing it to the helper.
+
+`predict_regression_gene` does not use the AnnData output helper, but it still
+requires `load_stage` for feature construction.
+
+### PerturbHD phenotype tables
+
+`predict_hit` additionally expects one file per dataset:
+
+```text
+<TUSOPERTURB_MEAN_EFFECT_DIR>/<paper_key>-h.all-all.pq
+```
+
+The required `paper_key` values are documented in
+[`docs/benchmarks/perturbhd_hit.md`](docs/benchmarks/perturbhd_hit.md).
+
+## Generate shared-feature predictions
+
+```python
+import anndata as ad
+from tusoperturb.api import (
+    predict_hit,
+    predict_regression,
+    predict_regression_gene,
+)
+
+master = ad.read_h5ad("/path/to/nadig25hepg2.h5ad")
+dataset = "nadig25hepg2"
+
+pred_cellsim = predict_regression(
+    master,
+    dataset,
+    seed=1,
+    head="cellsim",
+)
+pred_cellsim.write_h5ad("cellsim-nadig25hepg2.h5ad")
+
+pred_scperturb = predict_regression(
+    master,
+    dataset,
+    seed=1,
+    head="scperturb",
+)
+pred_scperturb.write_h5ad("scperturb-nadig25hepg2.h5ad")
+
+pred_regression = predict_regression_gene(
+    master,
+    dataset,
+    seed=1,
+    head="perturbhd_reg",
+)
+pred_regression.to_parquet("perturbhd-reg-nadig25hepg2.parquet", index=False)
+
+pred_hit = predict_hit(master, dataset, seed=1)
+pred_hit.to_parquet("perturbhd-hit-nadig25hepg2-seed1.parquet", index=False)
+```
+
+The three expression-regression keys use the same model configuration. With
+identical staged inputs, their underlying prediction matrix is the same; only
+the output format or downstream scorer differs.
+
+The current regression implementation does not use `seed`. PerturbHD hit
+prediction does use it to select `split-1`, `split-2`, or `split-3` from the
+phenotype table.
+
+## External requirements for Systema
+
+Systema does not use `perturb_2026`. It expects a `panel_master` object with:
+
+- `all_perts`: all perturbation labels;
+- `train_perts`: labels corresponding to the rows of `Y_train_post`;
+- `test_perts`: labels to predict;
+- `Y_train_post`: training expression array with shape
+  `(len(train_perts), n_genes)`; and
+- optionally, `donor_id` for DepMap selection.
+
+Every training and test label must occur in `all_perts`. Column order is not
+stored separately by TusoPerturb, so the caller is responsible for preserving
+the same gene order in `Y_train_post`, ground truth, and scoring code.
+
+```python
+import numpy as np
+from tusoperturb import predict_systema
+
+Y_test = predict_systema(panel_master, seed=1)
+assert Y_test.shape[0] == len(panel_master.test_perts)
+
+np.save("systema-predictions.npy", Y_test)
+```
+
+The `seed` argument is retained for compatibility with harnesses that build a
+different `panel_master` per split. The prediction function itself does not use
+it.
+
+## Score predictions
+
+TusoPerturb does not bundle benchmark scorers. Use the scorer version associated
+with each benchmark and preserve the expected perturbation and gene ordering.
+See the pages under [`docs/benchmarks/`](docs/benchmarks/) for adapter-specific
+output contracts.
+
+For a valid comparison with the recorded results, keep all of the following
+fixed:
+
+- dataset release and preprocessing;
+- train, validation, and test assignments;
+- staged GenePT features;
+- target construction;
+- scorer implementation and metric aggregation;
+- TusoPerturb configuration; and
+- dependency versions where exact numerical agreement matters.
+
+## Compare with the recorded values
+
+The repository's reference values can be read directly rather than copied into
+custom scripts:
+
+```python
+import json
+from pathlib import Path
+
+params = json.loads(Path("champion/params.json").read_text())
+recorded = params["validated_results_3seed_mean"]
+
+for benchmark, datasets in recorded.items():
+    for dataset, result in datasets.items():
+        print(
+            benchmark,
+            dataset,
+            result["metric"],
+            result["value"],
+            f'rank={result["rank"]}/{result["total_methods"]}',
+        )
+```
+
+Treat `rank` and `total_methods` as historical metadata from the recorded
+benchmark table. This repository does not include the baseline predictions or
+raw scorer outputs needed to independently reconstruct those ranks.
+
+Small floating-point differences may appear across NumPy, scikit-learn, BLAS,
+and operating-system combinations. Larger differences usually indicate a
+change in input ordering, target preprocessing, split assignment, or scorer
+version.
+
+## Troubleshooting
+
+### `ImportError: No module named perturb_2026`
+
+Install or expose the external `perturb_2026` package before using the shared
+feature builder. Systema-only workflows do not require it.
+
+### Missing reference files
+
+Use an editable installation from the source checkout, or set
+`TUSOPERTURB_REF_DIR` and `TUSOPERTURB_DEPMAP_DIR` before starting Python.
+
+### Missing PerturbHD Parquet file
+
+Check `TUSOPERTURB_MEAN_EFFECT_DIR` and confirm the filename uses the expected
+`paper_key`.
+
+### Shape or ordering mismatch
+
+Confirm that `train_perts` matches `Y_train` row order, `all_perts` matches
+`E_all_genept` row order, and `gene_names` matches every expression-target
+column.

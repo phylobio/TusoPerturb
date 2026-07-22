@@ -1,77 +1,86 @@
-# scPerturBench (Wei 2024)
+# scPerturBench adapter
 
-## What it measures
+TusoPerturb uses `predict_regression` for scPerturBench. The model path is the
+same as the CellSimBench adapter; the difference is the external scorer used to
+evaluate the resulting `AnnData` object.
 
-scPerturBench evaluates per-perturbation delta predictions with three
-core metrics: `pcc_delta` (Pearson correlation of predicted vs. observed
-delta on top DEGs — the primary), `mse` (mean squared error), and
-`common_degs` (overlap of predicted and observed top-DEG sets).
+## API
 
-**Head**: `predict_regression(master, dataset, seed, head='scperturb')`
-**HeadConfig**: `PRIOR_A_v2_193` — the same config as CellSim. The output
-numerical values are identical to CellSim's `pred_adata`; scPerturBench
-differs only in how it scores them.
-**Champion metric**: `pcc_delta = 0.682` on `replogle22k562`.
+```python
+from tusoperturb.api import predict_regression
 
-## Data you need to obtain
+pred_adata = predict_regression(
+    master,
+    dataset="replogle22k562",
+    seed=1,
+    head="scperturb",
+)
+```
 
-### Master h5ad
+Supported dataset identifiers are:
 
-The same 4 masters as CellSim (`nadig25hepg2`, `nadig25jurkat`,
-`replogle22k562`, `replogle22rpe1`), same sizes, same schema requirements.
-scPerturBench's split code may differ from CellSim's — check the
-scPerturBench paper for its train/test partition.
+```text
+nadig25hepg2
+nadig25jurkat
+replogle22k562
+replogle22rpe1
+```
 
-### The `gpu_stage/<dataset>/` bake
+## Model configuration
 
-Same schema as documented in
-[cellsim.md § The gpu_stage bake](cellsim.md#the-gpu_stagedataset-bake).
-If you built the bake for CellSim, it's reusable for scPerturB provided the
-train/test split you baked matches scPerturBench's expected partition.
-(In the champion run, the same bake was used for both.)
+`scperturb`, `cellsim`, and `perturbhd_reg` point to the same fixed ridge
+configuration:
 
-### The `perturb_2026` module
+- full 11,680-dimensional shared feature matrix;
+- standard feature scaling;
+- alpha 110;
+- block weights for GO Biological Process, STRING, and DepMap; and
+- no nearest-neighbor or binary-response blend.
 
-Same requirement as CellSim. `predict_regression` calls
-`build_pred_adata_from_matrix` regardless of `head=`.
+Given the same staged inputs, the `cellsim` and `scperturb` calls produce the
+same numerical prediction matrix before benchmark-specific scoring.
 
-## Running the head
+## Required inputs
+
+This adapter requires:
+
+1. a benchmark `master` object accepted by
+   `perturb_2026.loop.helpers.build_pred_adata_from_matrix`;
+2. the external `perturb_2026` package;
+3. a staged dataset loadable through
+   `perturb_2026.loop.gpu_stage_loader.load_stage(dataset)`; and
+4. the bundled reference features or equivalent path overrides.
+
+The required stage keys and ordering constraints are documented in
+[`REPRODUCE.md`](../../REPRODUCE.md#perturb_2026-stage-loader).
+
+## Example
 
 ```python
 import anndata as ad
 from tusoperturb.api import predict_regression
 
-master = ad.read_h5ad("/path/to/masters/replogle22k562.h5ad")
-pred_adata = predict_regression(master, "replogle22k562", seed=1, head="scperturb")
+master = ad.read_h5ad("/path/to/replogle22k562.h5ad")
+
+pred_adata = predict_regression(
+    master,
+    "replogle22k562",
+    seed=1,
+    head="scperturb",
+)
+
+pred_adata.write_h5ad("scperturb-replogle22k562.h5ad")
 ```
 
-Run over all 4 datasets × 3 seeds. Runtime is the same as CellSim
-(2-5 min per prediction, dominated by the shared feature build).
+The current regression implementation does not use `seed`. Ensure that the
+staged targets, AnnData output helper, and scorer all use the intended
+scPerturBench split and preprocessing.
 
-## Scoring your prediction
+## Scoring
 
-Feed `pred_adata` into scPerturBench's scorer, which returns `pcc_delta`,
-`mse`, and `common_degs` per perturbation and aggregated.
+Run the scPerturBench scorer on the generated `AnnData` object. Metric names,
+DE-gene selection, and aggregation are owned by that external scorer and may
+vary across revisions, so record the scorer version with any reported result.
 
-scPerturBench code + scorer: see the scPerturBench GitHub repo referenced
-in Wei et al. 2024.
-
-## Champion parity check
-
-```python
-assert abs(pcc_delta_replogle22k562 - 0.682) < 5e-3
-```
-
-Exact value from the champion run: `0.6817649548329194`.
-
-## Why the same config wins on both
-
-`PRIOR_A_v2_193` is a plain Ridge (α=110) on RobustScaler-normalized
-features with per-block weights that favor the annotation blocks
-(Reactome/GO/CollecTRI) over the noisier DepMap/baseline blocks. That
-combination is optimal for delta-from-control regression regardless of
-which downstream metric-set (CellSim vs. scPerturB) you score against —
-the underlying prediction problem is the same. This is why the
-`predict_regression(head=...)` argument mostly serves as a documentation
-alias: `head='cellsim'`, `head='scperturb'`, and `head='perturbhd_reg'`
-all resolve to `PRIOR_A_v2_193`.
+The project-recorded values are listed in
+[`report.md`](../../report.md#scperturbench).

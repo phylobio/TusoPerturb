@@ -1,0 +1,45 @@
+{
+  "source": "STRING v12",
+  "download_urls": [
+    "https://stringdb-downloads.org/download/protein.links.full.v12.0/9606.protein.links.full.v12.0.txt.gz",
+    "https://stringdb-downloads.org/download/protein.aliases.v12.0/9606.protein.aliases.v12.0.txt.gz"
+  ],
+  "filter_combined_score_min": 700,
+  "edges_kept": 233713,
+  "n_genes": 16015,
+  "embedding_dim": 128,
+  "node2vec_params": {
+    "walk_length": 30,
+    "num_walks": 10,
+    "window": 5,
+    "p": 1.0,
+    "q": 1.0,
+    "sg": 1,
+    "epochs": 5,
+    "seed": 1
+  },
+  "sanity_checks": {
+    "known_interactor_mean_cos": 0.5015940517187119,
+    "bogus_pair_mean_cos": 0.11835986624161403,
+    "random_pair_mean_cos": 0.27832770347595215
+  },
+  "pert_coverage": {
+    "all_perts_n": 2044,
+    "direct_match": 1938,
+    "legacy_alias_recovered": 39,
+    "total_covered": 1977,
+    "coverage_pct": 96.72,
+    "k562_test_perts_n": 409,
+    "test_direct_match": 388,
+    "test_alias_recovered": 4,
+    "test_total_covered": 392,
+    "test_coverage_pct": 95.84
+  },
+  "legacy_alias_file": "string_v12_pert_aliases.json",
+  "legacy_alias_sources": [
+    "Ensembl_HGNC_alias_symbol",
+    "UniProt_GN_Synonyms",
+    "Ensembl_HGNC_prev_symbol",
+    "Ensembl_external_synonym_HGNC"
+  ]
+}

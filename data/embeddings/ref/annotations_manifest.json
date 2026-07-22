@@ -1,0 +1,30 @@
+{
+  "reactome": {
+    "source": "gseapy.get_library(\"Reactome_2022\", organism=\"Human\") from Enrichr",
+    "n_pathways": 1816,
+    "n_genes": 16116,
+    "nnz": 106698,
+    "file_multihot": "reactome_multihot.npz",
+    "file_names": "reactome_pathway_names.json"
+  },
+  "go_bp": {
+    "source": "gseapy.get_library(\"GO_Biological_Process_2023\", organism=\"Human\") from Enrichr",
+    "n_terms": 5406,
+    "n_genes": 16116,
+    "nnz": 174856,
+    "file_multihot": "go_bp_multihot.npz",
+    "file_names": "go_bp_term_names.json"
+  },
+  "annot_universe": {
+    "file": "annot_gene_names.json",
+    "n_genes": 16116,
+    "description": "union of Reactome + GO BP genes; matrix rows indexed by this"
+  },
+  "pert_coverage_k562": {
+    "total_perts": 2044,
+    "reactome": 1483,
+    "go_bp": 1777,
+    "either": 1876,
+    "both": 1384
+  }
+}

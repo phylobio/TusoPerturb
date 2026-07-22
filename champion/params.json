@@ -1,0 +1,425 @@
+{
+  "package": "tusoperturb",
+  "version": "1.0.0",
+  "description": "Unified per-benchmark head configurations. Frozen from prior champions.",
+  "feature_blocks_11680": {
+    "genept": [
+      0,
+      3072
+    ],
+    "reactome": [
+      3072,
+      4888
+    ],
+    "go_bp": [
+      4888,
+      10294
+    ],
+    "hallmark": [
+      10294,
+      10344
+    ],
+    "progeny": [
+      10344,
+      10358
+    ],
+    "collectri": [
+      10358,
+      11543
+    ],
+    "string": [
+      11543,
+      11671
+    ],
+    "depmap": [
+      11671,
+      11676
+    ],
+    "baseline": [
+      11676,
+      11680
+    ]
+  },
+  "feature_subsets": [
+    "full_11680",
+    "no_genept_8608",
+    "no_genept_no_depmap_8603",
+    "systema_native_8604"
+  ],
+  "heads": {
+    "cellsim": {
+      "feature_subset": "full_11680",
+      "scaler": "standard",
+      "block_weights": {
+        "go_bp": 0.67,
+        "string": 1.5,
+        "depmap": 10.0
+      },
+      "ridge_estimator": "ridge_fixed",
+      "ridge_alphas": [
+        3.0,
+        10.0,
+        30.0,
+        100.0
+      ],
+      "ridge_fixed_alpha": 110.0,
+      "y_standardize": false,
+      "knn_K": 13,
+      "knn_tau": 11.0,
+      "knn_metric": "cosine",
+      "top_p": 2.0,
+      "bin_ridge_alphas": [
+        20.0,
+        60.0,
+        180.0
+      ],
+      "signed_binary": true,
+      "weights": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "y_z_score_arms": true,
+      "target_shape": "raw_delta"
+    },
+    "scperturb": {
+      "feature_subset": "full_11680",
+      "scaler": "standard",
+      "block_weights": {
+        "go_bp": 0.67,
+        "string": 1.5,
+        "depmap": 10.0
+      },
+      "ridge_estimator": "ridge_fixed",
+      "ridge_alphas": [
+        3.0,
+        10.0,
+        30.0,
+        100.0
+      ],
+      "ridge_fixed_alpha": 110.0,
+      "y_standardize": false,
+      "knn_K": 13,
+      "knn_tau": 11.0,
+      "knn_metric": "cosine",
+      "top_p": 2.0,
+      "bin_ridge_alphas": [
+        20.0,
+        60.0,
+        180.0
+      ],
+      "signed_binary": true,
+      "weights": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "y_z_score_arms": true,
+      "target_shape": "raw_delta"
+    },
+    "perturbhd_reg": {
+      "feature_subset": "full_11680",
+      "scaler": "standard",
+      "block_weights": {
+        "go_bp": 0.67,
+        "string": 1.5,
+        "depmap": 10.0
+      },
+      "ridge_estimator": "ridge_fixed",
+      "ridge_alphas": [
+        3.0,
+        10.0,
+        30.0,
+        100.0
+      ],
+      "ridge_fixed_alpha": 110.0,
+      "y_standardize": false,
+      "knn_K": 13,
+      "knn_tau": 11.0,
+      "knn_metric": "cosine",
+      "top_p": 2.0,
+      "bin_ridge_alphas": [
+        20.0,
+        60.0,
+        180.0
+      ],
+      "signed_binary": true,
+      "weights": [
+        1.0,
+        0.0,
+        0.0
+      ],
+      "y_z_score_arms": true,
+      "target_shape": "raw_delta"
+    },
+    "perturbhd_hit": {
+      "feature_subset": "no_genept_8608",
+      "scaler": "robust_25_75",
+      "block_weights": {},
+      "ridge_estimator": "ridgecv",
+      "ridge_alphas": [
+        3.0,
+        10.0,
+        30.0,
+        100.0
+      ],
+      "ridge_fixed_alpha": 110.0,
+      "y_standardize": true,
+      "knn_K": 13,
+      "knn_tau": 11.0,
+      "knn_metric": "cosine",
+      "top_p": 2.0,
+      "bin_ridge_alphas": [
+        20.0,
+        60.0,
+        180.0
+      ],
+      "signed_binary": false,
+      "weights": [
+        0.1,
+        0.65,
+        0.25
+      ],
+      "y_z_score_arms": true,
+      "target_shape": "raw_delta"
+    },
+    "systema": {
+      "feature_subset": "systema_native_8604",
+      "scaler": "robust_25_75",
+      "block_weights": {},
+      "ridge_estimator": "ridgecv",
+      "ridge_alphas": [
+        3.0,
+        10.0,
+        30.0,
+        100.0
+      ],
+      "ridge_fixed_alpha": 110.0,
+      "y_standardize": true,
+      "knn_K": 13,
+      "knn_tau": 11.0,
+      "knn_metric": "cosine",
+      "top_p": 2.0,
+      "bin_ridge_alphas": [
+        20.0,
+        60.0,
+        180.0
+      ],
+      "signed_binary": true,
+      "weights": [
+        0.2,
+        0.7,
+        0.1
+      ],
+      "y_z_score_arms": true,
+      "target_shape": "residual_pert_mean"
+    }
+  },
+  "validated_results_3seed_mean": {
+    "cellsim": {
+      "nadig25hepg2": {
+        "metric": "pearson_deltactrl_degs",
+        "value": 0.642326740353601,
+        "rank": 1,
+        "total_methods": 11,
+        "is_number_one": true
+      },
+      "nadig25jurkat": {
+        "metric": "pearson_deltactrl_degs",
+        "value": 0.6604560387361336,
+        "rank": 1,
+        "total_methods": 1,
+        "is_number_one": true
+      },
+      "replogle22k562": {
+        "metric": "pearson_deltactrl_degs",
+        "value": 0.68475798286553,
+        "rank": 1,
+        "total_methods": 11,
+        "is_number_one": true
+      },
+      "replogle22rpe1": {
+        "metric": "pearson_deltactrl_degs",
+        "value": 0.7381988266836054,
+        "rank": 1,
+        "total_methods": 1,
+        "is_number_one": true
+      }
+    },
+    "perturbhd_hit": {
+      "nadig25hepg2": {
+        "metric": "recall_at_budget_0.05",
+        "value": 0.4679999999999999,
+        "rank": 1,
+        "total_methods": 9,
+        "is_number_one": true
+      },
+      "nadig25jurkat": {
+        "metric": "recall_at_budget_0.05",
+        "value": 0.3771717171717171,
+        "rank": 1,
+        "total_methods": 9,
+        "is_number_one": true
+      },
+      "replogle22k562": {
+        "metric": "recall_at_budget_0.05",
+        "value": 0.4786666666666666,
+        "rank": 1,
+        "total_methods": 9,
+        "is_number_one": true
+      },
+      "replogle22rpe1": {
+        "metric": "recall_at_budget_0.05",
+        "value": 0.45,
+        "rank": 1,
+        "total_methods": 9,
+        "is_number_one": true
+      }
+    },
+    "perturbhd_reg": {
+      "nadig25hepg2": {
+        "metric": "corr",
+        "value": 0.7277302344640096,
+        "rank": 1,
+        "total_methods": 6,
+        "is_number_one": true
+      },
+      "nadig25jurkat": {
+        "metric": "corr",
+        "value": 0.7140033642450968,
+        "rank": 1,
+        "total_methods": 6,
+        "is_number_one": true
+      },
+      "replogle22k562": {
+        "metric": "corr",
+        "value": 0.7259861429532369,
+        "rank": 1,
+        "total_methods": 6,
+        "is_number_one": true
+      },
+      "replogle22rpe1": {
+        "metric": "corr",
+        "value": 0.7743128339449564,
+        "rank": 1,
+        "total_methods": 6,
+        "is_number_one": true
+      }
+    },
+    "scperturb": {
+      "nadig25hepg2": {
+        "metric": "pcc_delta",
+        "value": 0.6442620452931778,
+        "rank": 1,
+        "total_methods": 1,
+        "is_number_one": true
+      },
+      "nadig25jurkat": {
+        "metric": "pcc_delta",
+        "value": 0.6649254146913046,
+        "rank": 1,
+        "total_methods": 1,
+        "is_number_one": true
+      },
+      "replogle22k562": {
+        "metric": "pcc_delta",
+        "value": 0.6817649548329194,
+        "rank": 1,
+        "total_methods": 15,
+        "is_number_one": true
+      },
+      "replogle22rpe1": {
+        "metric": "pcc_delta",
+        "value": 0.7275986006031592,
+        "rank": 1,
+        "total_methods": 15,
+        "is_number_one": true
+      }
+    },
+    "systema": {
+      "adamson": {
+        "metric": "corr_20de",
+        "value": 0.7952732835851964,
+        "rank": 1,
+        "total_methods": 8,
+        "is_number_one": true
+      },
+      "norman": {
+        "metric": "corr_20de",
+        "value": 0.7147191552641834,
+        "rank": 1,
+        "total_methods": 8,
+        "is_number_one": true
+      },
+      "replogle_k562_gwps": {
+        "metric": "corr_20de",
+        "value": 0.5185196337969878,
+        "rank": 1,
+        "total_methods": 8,
+        "is_number_one": true
+      },
+      "replogle_rpe1": {
+        "metric": "corr_20de",
+        "value": 0.6509521249291468,
+        "rank": 3,
+        "total_methods": 8,
+        "is_number_one": false
+      },
+      "tian_crispra": {
+        "metric": "corr_20de",
+        "value": 0.4045825255910555,
+        "rank": 7,
+        "total_methods": 8,
+        "is_number_one": false
+      },
+      "tian_crispri": {
+        "metric": "corr_20de",
+        "value": 0.4811482054444596,
+        "rank": 6,
+        "total_methods": 8,
+        "is_number_one": false
+      },
+      "xu": {
+        "metric": "corr_20de",
+        "value": 0.4166611055781444,
+        "rank": 4,
+        "total_methods": 8,
+        "is_number_one": false
+      }
+    }
+  },
+  "provenance": {
+    "harmonized_from": [
+      {
+        "candidate_id": "A_v2_193_STR15_Dep100_a110",
+        "byte_verified": true,
+        "source_path": "/mnt/shared-workspace/biomni-method/perturb-2026/experiments/sprints/sprint_005/candidates/A_v2_193_STR15_Dep100_a110/candidate.py",
+        "deployed_for": [
+          "cellsim",
+          "scperturb",
+          "perturbhd_reg"
+        ]
+      },
+      {
+        "candidate_id": "R17_C_tau11_wr10_wk65_wb25",
+        "byte_verified": true,
+        "source_path": "/mnt/results/final_methodv3/code/candidate_R17_C_tau11_wr10_wk65_wb25.py",
+        "deployed_for": [
+          "perturbhd_hit"
+        ]
+      },
+      {
+        "candidate_id": "res_wr20_wk70_wb10",
+        "byte_verified": true,
+        "source_path": "/mnt/shared-workspace/tusoskill/systema_r1/benchmark/candidates/res_wr20_wk70_wb10/candidate.py",
+        "deployed_for": [
+          "systema"
+        ]
+      }
+    ],
+    "scorers": {
+      "perturbhd_family": "/mnt/shared-workspace/biomni-method/perturb-2026/experiments/final_bench/run_full_benchmark_v2.py",
+      "systema": "/mnt/shared-workspace/tusoskill/systema_r1/benchmark/eval/SEval.py"
+    }
+  }
+}

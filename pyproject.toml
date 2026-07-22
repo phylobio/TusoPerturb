@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tusoperturb"
+version = "1.0.0"
+description = "Unified perturbation-response predictor: one API for CellSim, scPerturB, PerturbHD, and Systema benchmarks."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "TusoPerturb contributors" }
+]
+keywords = [
+  "single-cell",
+  "perturbation",
+  "gene-expression",
+  "ridge-regression",
+  "knowledge-graph",
+  "benchmarking",
+]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: POSIX :: Linux",
+  "Intended Audience :: Science/Research",
+  "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+dependencies = [
+  "numpy>=1.26,<3",
+  "scipy>=1.11",
+  "scikit-learn>=1.4",
+  "pandas>=2.0",
+  "scanpy>=1.10",
+  "anndata>=0.10",
+  "pyarrow>=14",
+]
+
+[project.optional-dependencies]
+# For regenerating the GenePT block only. See scripts/gen_embeddings/.
+genept = [
+  "openai>=1.30",
+  "biopython>=1.83",
+  "tqdm>=4.66",
+]
+
+[project.urls]
+Documentation = "https://github.com/tusoperturb/tusoperturb#readme"
+
+[tool.setuptools.packages.find]
+include = ["tusoperturb*"]
+
+# NOTE: The vendored static reference data lives at `data/embeddings/` at the
+# repo root (not inside the `tusoperturb/` package). `feature_builder.py`
+# resolves it relative to the repo root via `Path(__file__).parent.parent`,
+# so an editable install (`pip install -e .`) from the source tree works
+# out of the box. A wheel install (`pip install .`) will install the code
+# only; either keep the source tree around, or point at the refs manually
+# using the `TUSOPERTURB_REF_DIR` and `TUSOPERTURB_DEPMAP_DIR` env vars.
+

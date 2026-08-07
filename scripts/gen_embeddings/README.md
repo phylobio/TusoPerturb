@@ -1,126 +1,154 @@
-# GenePT embedding utilities
+# Co-essentiality basis generation
 
-This directory contains preprocessing scripts for generating or copying the
-gene-level GenePT table used by TusoPerturb's shared feature builder. The table
-is stored in an `AnnData` object under
-`adata.uns["embeddings_genept"]`.
+This directory contains the script that rebuilds the DepMap co-essentiality
+basis used by TusoPerturb's shared feature builder. The basis is the trailing
+96 columns of the 8,700-dimensional feature space: a rank-64 block and a
+rank-32 block, both indexed by gene symbol.
 
-These scripts are only needed when preparing staged data for the CellSimBench,
-scPerturBench, or PerturbHD workflows. They are not required for Systema or for
-calling `head_predict()` with an already constructed feature matrix.
+It is the only bundled asset produced by fitting rather than by download, so it
+is the only one that needs a script. The seven annotation blocks — Reactome, GO
+Biological Process, MSigDB Hallmark, PROGENy, CollecTRI, STRING, and DepMap
+essentiality — are distributed under [`data/embeddings/`](../../data/embeddings/)
+and are not regenerated here; their provenance is recorded in the manifests
+under [`data/embeddings/ref/`](../../data/embeddings/ref/).
+
+The shipped tables are already in the repository. Rebuilding is only necessary
+to move to a newer DepMap release, to audit the pipeline, or to reproduce the
+cell-line-holdout control.
 
 ## Files
 
 | File | Purpose |
 |---|---|
-| `gather_embeddings.sh` | Command-line wrapper for generation and reference-transfer modes |
-| `generate_genept_gene_embeddings.py` | Builds gene descriptions and requests OpenAI embeddings |
-| `transfer_reference_gene_embeddings.py` | Copies existing `embeddings_*` entries between `AnnData` files |
+| `build_coessentiality_embeddings.py` | Truncated SVD of the DepMap gene-effect matrix; writes both shipped ranks, the gene-name index, and the manifest |
 
 ## Requirements
 
-Install TusoPerturb from the repository root together with the GenePT optional
-dependencies and `pybiomart`:
+The script needs only `numpy`, `pandas`, and `scikit-learn`, which are already
+dependencies of the package:
 
 ```bash
-python -m pip install -e ".[genept]" pybiomart
+python -m pip install -e .
 ```
 
-Generation mode also requires:
+It also needs one input file: `CRISPRGeneEffect.csv` from a DepMap public
+release, available from <https://depmap.org/portal/download/>. No API key, no
+network access at run time, and no paid service are involved.
 
-- an `OPENAI_API_KEY` environment variable;
-- network access to the configured OpenAI embeddings model;
-- access to Ensembl BioMart and the NCBI gene-summary download.
+Rows of that file are cell-line model identifiers (`ACH-......`), columns are
+gene labels of the form `A1BG (1)`, and values are Chronos gene effect scores.
 
-The current generator obtains protein-coding human gene symbols from Ensembl,
-maps them to NCBI Gene summaries, and embeds the resulting descriptions. It
-then attaches the complete gene-by-embedding table to the supplied `.h5ad`
-file. The input file's `.var` table is not used to limit which genes are
-generated.
+## What the script computes
 
-API calls may incur usage charges. Gene-description text is sent to the
-configured embeddings service.
+1. Strip the Entrez identifier from each column label and upper-case the symbol.
+2. Transpose to genes × cell lines.
+3. Collapse duplicate gene symbols by `nanmean`.
+4. Impute residual missing values with the per-gene mean.
+5. Drop genes that are non-finite or have zero variance across lines.
+6. Centre each gene, so the SVD describes *differential* dependency profile
+   rather than mean essentiality — the latter is already carried by the
+   five-column `depmap` block.
+7. `TruncatedSVD(n_components=k, random_state=0, algorithm="randomized")` for
+   k = 64 and k = 32.
 
-## Generate embeddings
+The fit is unsupervised on the external DepMap matrix. No benchmark target,
+split index, or perturbation label enters it.
+
+## Provenance of the shipped basis
+
+| Quantity | Value |
+|---|---|
+| Input | DepMap `CRISPRGeneEffect.csv` (Chronos gene effect, public release) |
+| Cell lines | 1,186 |
+| Genes after QC | 18,435 unique symbols |
+| Missing fraction before impute | 0.0352248 |
+| Explained variance ratio sum, k = 64 | 0.3414 |
+| Explained variance ratio sum, k = 32 | 0.2690 |
+
+Both ranks are shipped and both are used. The rank-32 block is not a subspace
+of the rank-64 block, because each is fitted independently.
+
+## Rebuild
 
 From the repository root:
 
 ```bash
-export OPENAI_API_KEY="..."
-
-bash scripts/gen_embeddings/gather_embeddings.sh \
-  path/to/input.h5ad \
-  path/to/output_with_embeddings.h5ad
+python scripts/gen_embeddings/build_coessentiality_embeddings.py \
+  path/to/CRISPRGeneEffect.csv
 ```
 
-By default, the Python generator uses `text-embedding-3-large` with 3,072
-output dimensions. Per-gene embeddings and gene descriptions are cached under
-`data/gene_embeddings/genept/`, relative to the directory from which the
-command is run.
+This overwrites the four files in
+[`data/embeddings/coessentiality/`](../../data/embeddings/coessentiality/):
 
-When the output file already exists, the wrapper skips generation. Pass
-`--force` to run the generator again:
+| File | Contents |
+|---|---|
+| `depmap_coess_64.npy` | `float32`, `(18435, 64)` |
+| `depmap_coess_32.npy` | `float32`, `(18435, 32)` |
+| `depmap_coess_gene_names.json` | `list[str]`, row order for both tables |
+| `depmap_coess_manifest.json` | Provenance and explained-variance record |
+
+Write elsewhere with `--out-dir`:
 
 ```bash
-bash scripts/gen_embeddings/gather_embeddings.sh \
-  path/to/input.h5ad \
-  path/to/output_with_embeddings.h5ad \
-  --force
+python scripts/gen_embeddings/build_coessentiality_embeddings.py \
+  path/to/CRISPRGeneEffect.csv \
+  --out-dir /tmp/coess_rebuild
 ```
 
-`--force` bypasses the output-file check; the Python generator can still reuse
-its per-gene cache. Run the Python script directly to change the model,
-dimensionality, or cache directory:
+The run prints the recovered gene count, line count, and explained-variance
+sums next to the shipped values. A different DepMap release will shift all of
+them; the shipped basis is the one the recorded results were produced with, so
+a rebuild from a newer release is a new basis, not a reproduction.
+
+The script pins `OPENBLAS_CORETYPE=Haswell` before importing NumPy. The
+randomized SVD is deterministic given a fixed BLAS kernel and `random_state=0`;
+letting OpenBLAS dispatch on the host CPU makes the trailing digits of the basis
+machine-dependent.
+
+Runtime is a few minutes, peaking around 6 GB of resident memory.
+
+## Cell-line-holdout control
+
+Three of the four benchmark cell lines are themselves among the screened DepMap
+lines: K562 (`ACH-000551`), HEPG2 (`ACH-000739`), and JURKAT (`ACH-000995`).
+RPE1 is not a cancer line and does not appear. The basis could in principle
+encode those lines' own viability rather than a transferable functional prior.
+
+`--holdout-lines` drops all three *before* any statistic is computed — before
+the per-gene mean impute, before centring, before the SVD — so no benchmark line
+can reach the basis through any path:
 
 ```bash
-python scripts/gen_embeddings/generate_genept_gene_embeddings.py \
-  --input path/to/input.h5ad \
-  --output path/to/output_with_embeddings.h5ad \
-  --model text-embedding-3-large \
-  --dimensions 3072 \
-  --cache_dir path/to/cache
+python scripts/gen_embeddings/build_coessentiality_embeddings.py \
+  path/to/CRISPRGeneEffect.csv \
+  --holdout-lines
 ```
 
-Use `--help` to view all supported command-line options.
+Every output filename gains a `_ho` suffix, so the control never overwrites the
+shipped basis, and the manifest records an `excluded_models` list.
 
-## Copy embeddings from a reference file
+| Quantity | Full basis | Holdout basis |
+|---|---|---|
+| Cell lines | 1,186 | 1,183 |
+| Genes after QC | 18,435 | 18,435 |
+| Explained variance ratio sum, k = 64 | 0.3414 | 0.3416 |
+| Explained variance ratio sum, k = 32 | 0.2690 | 0.2694 |
 
-A reference `.h5ad` can be used instead of making new API calls:
-
-```bash
-bash scripts/gen_embeddings/gather_embeddings.sh \
-  path/to/target.h5ad \
-  path/to/target_with_embeddings.h5ad \
-  path/to/reference_with_embeddings.h5ad
-```
-
-Reference-transfer mode copies every entry in `reference.uns` whose key starts
-with `embeddings_`. It does not validate that the copied tables are compatible
-with the target dataset, so the reference should use the same gene naming and
-embedding conventions expected by the downstream staging pipeline.
-
-## Output format
-
-Generation mode writes a pandas `DataFrame` to
-`adata.uns["embeddings_genept"]`:
-
-- rows are human gene symbols;
-- columns are embedding dimensions represented as strings;
-- values are `float32` embeddings.
-
-The updated `AnnData` object is written to the requested output path; the input
-file is not modified in place unless the same path is supplied explicitly.
+The holdout basis reproduced the champion's headline result, which is the
+evidence that the co-essentiality gain is a functional prior and not the
+benchmark lines' own dependency profile. See
+[`docs/leakage.md`](../../docs/leakage.md). The holdout tables themselves are
+not shipped, because the champion uses the full basis.
 
 ## Use in TusoPerturb
 
-The benchmark staging pipeline is expected to convert the gene-level table
-into the per-perturbation `E_all_genept` matrix loaded by
-`tusoperturb.feature_builder.build_shared_features()`. Creation of that staged
-dataset is outside this directory; see the
-[benchmark guides](../../docs/benchmarks/) and
-[`REPRODUCE.md`](../../REPRODUCE.md).
+[`tusoperturb/coessentiality.py`](../../tusoperturb/coessentiality.py) loads the
+two `.npy` tables and the gene-name index, and maps each perturbation's gene
+symbols onto rows. Multi-gene perturbations are averaged within each block;
+symbols absent from the index contribute zero. The resulting 96 columns are
+appended to the 8,604 annotation columns and scaled by the head's `emb_weight`
+before ridge and k-NN fitting — see
+[`ARCHITECTURE.md`](../../ARCHITECTURE.md).
 
-The remaining feature blocks—Reactome, GO Biological Process, MSigDB Hallmark,
-PROGENy, CollecTRI, STRING, and DepMap—are distributed separately under
-`data/embeddings/` and are not regenerated by these scripts. Their provenance
-is recorded in the manifests under `data/embeddings/ref/`.
+Set `TUSOPERTURB_COESS_DIR` to point the loader at a directory other than the
+vendored one.

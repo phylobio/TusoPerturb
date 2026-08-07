@@ -1,54 +1,50 @@
-"""Shared 11680-D feature builder for CellSim / scPerturB / PerturbHD heads.
+"""Shared 8700-D feature builder for all five benchmark heads.
 
-Builds the same feature stack A_v2_193 uses:
-  GenePT (3072) + reactome (1816) + go_bp (5406) + hallmark (50) + progeny (14)
-  + collectri (1185) + string (128) + depmap (5) + baseline (4) = 11680.
+One feature space, built the same way for every benchmark::
 
-For CellSim / scPerturB / PerturbHD-hit / PerturbHD-reg the features are keyed
-by the essential-perturbation gene panel loaded via
-`perturb_2026.loop.gpu_stage_loader.load_stage(dataset)`.
+    annotation stack (8604)   reactome 1816 | go_bp 5406 | hallmark 50
+                              | progeny 14 | collectri 1185 | string 128
+                              | depmap 5
+    co-essentiality    (96)   coess64 64 | coess32 32
+    -------------------------------------------------------------------
+    total            8700
+
+The annotation stack comes from :mod:`tusoperturb.systema_adapter` and the
+trailing block from :mod:`tusoperturb.coessentiality`. Both are built by
+gene-symbol lookup from the perturbation names, so a Systema panel and a
+CellSim dataset go through exactly the same code with the same column
+semantics. Nothing is sliced out of a wider matrix.
 
 Reference data (STRING v12, Reactome, GO BP, Hallmark, PROGENy, CollecTRI,
-DepMap essentiality) is vendored under ``TusoPerturb/data/embeddings/``. The
-vendored orth-feature loaders live in ``tusoperturb._deps`` and are used by
-default; the module still falls back to the shared-workspace copies used
-during method development if the vendored copies are missing.
+DepMap essentiality, DepMap co-essentiality) is vendored under
+``TusoPerturb/data/embeddings/``.
+
+For the CellSim / scPerturB / PerturbHD datasets the perturbation panel and
+targets are keyed by the essential-perturbation gene panel loaded via
+`perturb_2026.loop.gpu_stage_loader.load_stage(dataset)`; see
+``build_shared_features``.
 """
 from __future__ import annotations
-import os
-import sys
-from pathlib import Path
 
-# --- bootstrap ----------------------------------------------------------------
-# Local package root (parent of the tusoperturb/ folder) is inserted first so
-# `import tusoperturb._deps.orth_features_v2` resolves to the vendored copy.
-_HERE = Path(__file__).resolve().parent
-_PKG_ROOT = _HERE.parent  # .../TusoPerturb
-_BOOTSTRAP = [
-    str(_PKG_ROOT),
-    str(_HERE / '_deps'),
-    # Legacy method-development paths — kept for byte-identity re-runs against
-    # the sprint_004 / sprint_005 trees. Harmless if the paths don't exist.
-    '/mnt/results/method_repo_76/code/sprint_deps',
-    '/mnt/results/method_repo_76/code',
-    '/mnt/shared-workspace/biomni-method/perturb-2026/experiments/sprints/sprint_004',
-    '/mnt/shared-workspace/biomni-method/perturb-2026/experiments/sprints/sprint_005',
-    '/mnt/shared-workspace/biomni-method/perturb-2026/benchmark/reference_repos/perturb-hd/packages/perturb-hd/src',
-    '/mnt/shared-workspace/biomni-method/perturb-2026/benchmark/reference_repos/calibrated-metrics',
-    '/workspace',
-]
-for p in _BOOTSTRAP:
-    if p not in sys.path:
-        sys.path.insert(0, p)
+import os
+from pathlib import Path
+from typing import Dict, Sequence, Tuple
 
 import numpy as np
-import pandas as pd
+
+from .coessentiality import COESS_WIDTH, build_coessentiality_block
+from .heads import ANNOT_WIDTH, WIDTH
+from .systema_adapter import build_systema_features, resolve_depmap_line
+
+_HERE = Path(__file__).resolve().parent
+_PKG_ROOT = _HERE.parent  # .../TusoPerturb
+
 
 # `perturb_2026.loop.gpu_stage_loader.load_stage` is only needed by
-# `build_shared_features()` (the PerturbHD-family entry point). It is
-# imported lazily so that the rest of the module — `head_predict`, the
-# HeadConfig table, the vendored orth-feature loaders, systema_adapter —
-# remains importable on machines that don't have `perturb_2026` installed.
+# `build_shared_features()` (the PerturbHD-family entry point). It is imported
+# lazily so that the rest of the package -- `build_features`, `head_predict`,
+# the HeadConfig table, the Systema path -- stays importable on machines that
+# don't have `perturb_2026` installed.
 def _lazy_load_stage():
     try:
         from perturb_2026.loop.gpu_stage_loader import load_stage
@@ -64,15 +60,6 @@ def _lazy_load_stage():
     return load_stage
 
 
-# Prefer the vendored loader; fall back to the flat legacy import.
-try:
-    from tusoperturb._deps.orth_features_v2 import load_orth_features_v2 as load_orth_features
-except ImportError:
-    from orth_features_v2 import load_orth_features_v2 as load_orth_features
-
-
-FEATURES = ('reactome', 'go_bp', 'hallmark', 'progeny', 'collectri', 'string')
-
 DS_TO_PAPER_KEY = {
     'replogle22k562':  'replogle_k562_essential_full',
     'replogle22rpe1':  'replogle_rpe1_essential_full',
@@ -86,79 +73,81 @@ DS_TO_DEPMAP_KEY = {
     'nadig25jurkat':   'Jurkat',
 }
 
-# --- reference-data resolution ------------------------------------------------
-# DepMap parquets: prefer vendored TusoPerturb/data/embeddings/depmap_essentiality/,
-# fall back to the shared-workspace method-dev copy.
-_VENDORED_DEPMAP = _PKG_ROOT / 'data' / 'embeddings' / 'depmap_essentiality'
-_LEGACY_DEPMAP   = Path('/mnt/shared-workspace/biomni-method/perturb-2026/data/orth_info/depmap_essentiality')
-_ENV_DEPMAP      = os.environ.get('TUSOPERTURB_DEPMAP_DIR')
-if _ENV_DEPMAP and Path(_ENV_DEPMAP).is_dir():
-    DEPMAP_DIR = Path(_ENV_DEPMAP)
-elif _VENDORED_DEPMAP.is_dir():
-    DEPMAP_DIR = _VENDORED_DEPMAP
-else:
-    DEPMAP_DIR = _LEGACY_DEPMAP
-
-# Mean-effect AUCell precomputes are not vendored (too large; ~GB). This path
-# is only consulted by PerturbHD-hit workflows. Prefer an explicit environment
-# override and retain the shared-workspace default for byte-identity re-runs.
+# Mean-effect AUCell precomputes are not vendored (~GB). Only the PerturbHD-hit
+# workflow consults them, so the variable is resolved lazily and every other
+# workflow runs without it.
 _ENV_MEAN_EFFECT = os.environ.get('TUSOPERTURB_MEAN_EFFECT_DIR')
-MEAN_EFFECT_DIR = (
-    Path(_ENV_MEAN_EFFECT)
-    if _ENV_MEAN_EFFECT
-    else Path('/mnt/shared-workspace/biomni-method/perturb-2026/data/raw/perturbhd_precomputed/mean_effects_aucell')
-)
+MEAN_EFFECT_DIR = Path(_ENV_MEAN_EFFECT) if _ENV_MEAN_EFFECT else None
 
 
-def _load_depmap_features(dataset, all_perts):
-    key = DS_TO_DEPMAP_KEY[dataset]
-    df = pd.read_parquet(DEPMAP_DIR / f'{key}.pq').set_index('gene')
-    cols = ['own_effect', 'own_abs_effect', 'pop_mean', 'pop_std', 'selectivity']
-    features = np.zeros((len(all_perts), 5), dtype=np.float32)
-    gene_lookup = {g.upper(): i for i, g in enumerate(df.index)}
-    for i, pert in enumerate(all_perts):
-        p_upper = pert.upper() if isinstance(pert, str) else str(pert).upper()
-        if p_upper in gene_lookup:
-            features[i] = df.iloc[gene_lookup[p_upper]][cols].values.astype(np.float32)
-    return features
+def mean_effect_path(paper_key: str) -> Path:
+    """Locate the PerturbHD AUCell phenotype table for one dataset."""
+    if MEAN_EFFECT_DIR is None:
+        raise FileNotFoundError(
+            "PerturbHD hit prediction needs the AUCell mean-effect tables. "
+            "Set TUSOPERTURB_MEAN_EFFECT_DIR to the directory holding "
+            f"'{paper_key}-h.all-all.pq' before importing tusoperturb. "
+            "See docs/benchmarks/perturbhd_hit.md.")
+    return MEAN_EFFECT_DIR / f'{paper_key}-h.all-all.pq'
 
 
-def _per_pert_baseline_features(all_perts, gene_names, mean_baseline):
-    gene_to_idx = {g.upper(): i for i, g in enumerate(gene_names)}
-    n = len(all_perts)
-    features = np.zeros((n, 4), dtype=np.float32)
-    baseline_mean = mean_baseline.mean()
-    baseline_std = max(mean_baseline.std(), 1e-6)
-    sorted_baseline = np.sort(mean_baseline)
-    for i, pert in enumerate(all_perts):
-        p_upper = pert.upper() if isinstance(pert, str) else str(pert).upper()
-        if p_upper in gene_to_idx:
-            idx = gene_to_idx[p_upper]
-            val = float(mean_baseline[idx])
-            features[i, 0] = val
-            features[i, 1] = np.log1p(max(val, 0.0))
-            features[i, 2] = (val - baseline_mean) / baseline_std
-            features[i, 3] = float(np.searchsorted(sorted_baseline, val)) / len(sorted_baseline)
-    return features
+def build_features(perts: Sequence[str], donor_id: str
+                   ) -> Tuple[np.ndarray, Dict[str, Tuple[int, int]], Dict[str, str]]:
+    """Build the (n_perts, 8700) feature matrix for any benchmark.
+
+    Args:
+      perts:    perturbation names in row order. `X`, `X+ctrl` and `X+Y` are
+                all accepted; a combination averages (dense blocks) or unions
+                (indicator blocks) its genes.
+      donor_id: cell line of the screen, e.g. 'K562', 'RPE1', 'HepG2',
+                'Jurkat'. Selects the 5-column DepMap dependency block;
+                unknown donors fall back to K562 (see
+                `systema_adapter.resolve_depmap_line`).
+
+    Returns:
+      (E, offsets, coverage) where E is (n_perts, 8700) float32, `offsets`
+      maps block name -> (start, stop) column bounds in E, and `coverage` maps
+      block name -> the fraction of perturbations that hit that block.
+    """
+    E_annot, offsets, stats = build_systema_features(perts, donor_id)
+    if E_annot.shape[1] != ANNOT_WIDTH:
+        raise AssertionError(
+            f"annotation stack is {E_annot.shape[1]} wide, expected {ANNOT_WIDTH}")
+
+    E_coess, coess_offsets, coess_stats = build_coessentiality_block(perts)
+    if E_coess.shape[1] != COESS_WIDTH:
+        raise AssertionError(
+            f"co-essentiality block is {E_coess.shape[1]} wide, expected {COESS_WIDTH}")
+
+    for name, (lo, hi) in coess_offsets.items():
+        offsets[name] = (ANNOT_WIDTH + lo, ANNOT_WIDTH + hi)
+    stats.update(coess_stats)
+
+    E = np.concatenate([E_annot, E_coess], axis=1).astype(np.float32)
+    if E.shape[1] != WIDTH:
+        raise AssertionError(f"feature width {E.shape[1]} != {WIDTH}")
+    return E, offsets, stats
 
 
 def build_shared_features(dataset: str) -> dict:
-    """Build the shared 11680-D feature matrix for a PerturbHD-family dataset.
+    """Build the 8700-D feature matrix and targets for a PerturbHD-family dataset.
+
+    Args:
+      dataset: one of 'nadig25hepg2', 'nadig25jurkat', 'replogle22k562',
+               'replogle22rpe1'.
 
     Returns a dict with:
-      E_all:        (n_all_perts, 11680) float32
-      Y_train:      (n_train_perts, n_genes) target deltas from load_stage
-      all_perts:    list[str] pert names in E_all row order
-      train_perts:  list[str] pert names used for training
+      E_all:         (n_all_perts, 8700) float32
+      Y_train:       (n_train_perts, n_genes) target deltas from load_stage
+      all_perts:     list[str] pert names in E_all row order
+      train_perts:   list[str] pert names used for training
       train_indices: indices into E_all/all_perts of the training perts
-      donor_id:     'K562', 'RPE1', 'HepG2', or 'Jurkat'
+      donor_id:      'K562', 'RPE1', 'HepG2', or 'Jurkat'
       mean_baseline: (n_genes,) control mean expression
-      gene_names:   list[str] gene symbols in Y_train column order
+      gene_names:    list[str] gene symbols in Y_train column order
     """
     load_stage = _lazy_load_stage()
     stage = load_stage(dataset)
-    E_train_genept = stage['E_train_genept']
-    E_all_genept = stage['E_all_genept']
     Y_train = stage['Y_train']
     all_perts = stage['all_perts']
     train_perts = stage['train_perts']
@@ -166,19 +155,21 @@ def build_shared_features(dataset: str) -> dict:
     mean_baseline = stage['mean_baseline']
     gene_names = stage['gene_names']
 
-    feats_all, _ = load_orth_features(all_perts, features=FEATURES)
-    depmap_feats = _load_depmap_features(dataset, all_perts)
-    pert_baseline = _per_pert_baseline_features(all_perts, gene_names, mean_baseline)
+    # v1 mapped every PerturbHD-family donor onto the K562 dependency block by
+    # accident (no HepG2/Jurkat entry in DEPMAP_MAP). The sealed v2 run used
+    # the dataset's own line, so assert the two routes agree rather than
+    # trusting the fallback.
+    expected = DS_TO_DEPMAP_KEY[dataset]
+    resolved = resolve_depmap_line(donor_id)
+    if resolved != expected:
+        raise AssertionError(
+            f"{dataset}: donor_id {donor_id!r} resolves to DepMap line "
+            f"{resolved!r}, expected {expected!r}")
+
+    E_all, _, _ = build_features(all_perts, donor_id)
+
     all_idx = {p: i for i, p in enumerate(all_perts)}
     train_indices = np.array([all_idx[p] for p in train_perts])
-
-    all_parts = [E_all_genept]
-    for f in FEATURES:
-        all_parts.append(feats_all[f])
-    all_parts.append(depmap_feats)
-    all_parts.append(pert_baseline)
-
-    E_all = np.concatenate(all_parts, axis=1).astype(np.float32)
 
     return {
         'E_all': E_all,

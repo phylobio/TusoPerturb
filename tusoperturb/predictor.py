@@ -1,99 +1,59 @@
-"""Unified predictor -- one code path, per-head HeadConfig.
+"""The predictor: one code path, one `HeadConfig` per head.
 
-Reduces to plain Ridge(alpha, random_state=1) when weights = (1.0, 0.0, 0.0)
-+ scaler='standard' + ridge_estimator='ridge_fixed' + y_standardize=False, so
-`head_predict(cfg=PRIOR_A_v2_193)` is byte-identical to A_v2_193.
+`head_predict` is the whole model. Seven steps:
 
-Falls through to the 3-arm z-blend when weights are mixed, matching R17_C
-(hit head, raw target) and res_wr20_wk70_wb10 (systema head, residual target).
+  1. scale     RobustScaler(25, 75) fitted on the training rows only
+  2. weight    the trailing `EMB_COLS` co-essentiality columns are multiplied
+               by `cfg.emb_weight` after scaling
+  3. shape     target -> raw, or residual after removing the per-gene mean of
+               the training responses
+  4. ridge     fixed-alpha Ridge, or RidgeCV over `cfg.ridge_alphas`
+  5. kNN       cosine neighbours with supervised feature weighting,
+               deterministic tie expansion and a per-row adaptive bandwidth
+  6. binary    RidgeCV on the top-`top_p`% binarised target
+  7. blend     fixed weights, optional per-arm z-scoring, then the target
+               shaping is undone with the `shrink` amplitude factor
+
+Nothing in this file is fitted on anything but `train_idx` rows.
 """
 from __future__ import annotations
-from typing import Tuple, Optional, Dict
+from typing import Optional, Tuple
+
 import numpy as np
+from sklearn.decomposition import TruncatedSVD
 from sklearn.linear_model import Ridge, RidgeCV
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import RobustScaler, StandardScaler, normalize
 
-from .heads import HeadConfig, FEATURE_BLOCKS
+from .heads import EMB_COLS, HeadConfig
 
 
-def _select_features(E: np.ndarray, cfg: HeadConfig) -> np.ndarray:
-    """Slice/mask the shared 11680-D feature matrix per head config.
-
-    NOTE: `systema_native_8604` is handled OUTSIDE this function --
-    the Systema adapter builds its own 8604-D matrix from
-    systema_features.py and passes it directly (E already the right shape).
-    """
-    if cfg.feature_subset == 'full_11680':
-        return E
-    elif cfg.feature_subset == 'no_genept_8608':
-        return E[:, 3072:11680]
-    elif cfg.feature_subset == 'no_genept_no_depmap_8603':
-        # From shared 11680: drop genept [0:3072) AND depmap [11671:11676).
-        # Result = 11680 - 3072 - 5 = 8603 columns.
-        mask = np.ones(E.shape[1], dtype=bool)
-        mask[0:3072] = False
-        mask[11671:11676] = False
-        return E[:, mask]
-    elif cfg.feature_subset == 'systema_native_8604':
-        # Systema adapter passes its own 8604-D matrix directly.
-        return E
-    else:
-        raise ValueError(f"Unknown feature_subset: {cfg.feature_subset}")
-
-
+# --------------------------------------------------------------------------
+# feature path
+# --------------------------------------------------------------------------
 def _apply_scaler(X_train: np.ndarray, X_all: np.ndarray, cfg: HeadConfig
                   ) -> Tuple[np.ndarray, np.ndarray]:
-    """Fit scaler on X_train, apply to both X_train and X_all."""
+    """Fit the scaler on X_train, apply it to both X_train and X_all."""
     if cfg.scaler == 'robust_25_75':
         sc = RobustScaler(quantile_range=(25, 75)).fit(X_train)
-        return sc.transform(X_train).astype(np.float32), sc.transform(X_all).astype(np.float32)
+        return (sc.transform(X_train).astype(np.float32),
+                sc.transform(X_all).astype(np.float32))
     elif cfg.scaler == 'standard':
-        sc = StandardScaler()
-        sc.fit(X_train)
-        # Match A_v2_193 handling of zero-variance columns.
+        sc = StandardScaler().fit(X_train)
         scale = np.where(sc.scale_ > 0, sc.scale_, 1.0)
-        Xtr = ((X_train - sc.mean_) / scale).astype(np.float32)
-        Xal = ((X_all - sc.mean_) / scale).astype(np.float32)
-        return Xtr, Xal
+        return (((X_train - sc.mean_) / scale).astype(np.float32),
+                ((X_all - sc.mean_) / scale).astype(np.float32))
     elif cfg.scaler == 'none':
         return X_train.astype(np.float32), X_all.astype(np.float32)
-    else:
-        raise ValueError(f"Unknown scaler: {cfg.scaler}")
+    raise ValueError(f"Unknown scaler: {cfg.scaler}")
 
 
-def _feature_subset_offsets(cfg: HeadConfig) -> Dict[str, Tuple[int, int]]:
-    """Return the block offsets valid AFTER feature subsetting."""
-    if cfg.feature_subset == 'full_11680':
-        return FEATURE_BLOCKS.copy()
-    elif cfg.feature_subset == 'no_genept_8608':
-        return {name: (s - 3072, e - 3072)
-                for name, (s, e) in FEATURE_BLOCKS.items() if name != 'genept'}
-    elif cfg.feature_subset == 'no_genept_no_depmap_8603':
-        names = ['reactome', 'go_bp', 'hallmark', 'progeny', 'collectri', 'string', 'baseline']
-        out = {}; cursor = 0
-        for n in names:
-            s, e = FEATURE_BLOCKS[n]
-            width = e - s
-            out[n] = (cursor, cursor + width); cursor += width
-        return out
-    elif cfg.feature_subset == 'systema_native_8604':
-        # Native systema layout, offsets provided externally if needed.
-        return {}
-    else:
-        raise ValueError(f"Unknown feature_subset: {cfg.feature_subset}")
-
-
-def _apply_block_weights(X: np.ndarray, cfg: HeadConfig,
-                          offsets: Dict[str, Tuple[int, int]]) -> np.ndarray:
-    """Multiply feature blocks by cfg.block_weights (post-scaling)."""
-    if not cfg.block_weights:
+def _apply_emb_weight(X: np.ndarray, cfg: HeadConfig) -> np.ndarray:
+    """Scale the trailing co-essentiality columns (post-scaling amplitude)."""
+    w = float(cfg.emb_weight)
+    if EMB_COLS <= 0 or w == 1.0:
         return X
-    Xw = X.copy()
-    for block_name, (start, end) in offsets.items():
-        if block_name in cfg.block_weights:
-            Xw[:, start:end] *= cfg.block_weights[block_name]
-    return Xw
+    return np.concatenate([X[:, :-EMB_COLS], X[:, -EMB_COLS:] * np.float32(w)], axis=1)
 
 
 def _zs(M: np.ndarray) -> np.ndarray:
@@ -102,6 +62,9 @@ def _zs(M: np.ndarray) -> np.ndarray:
     return (M - m) / s
 
 
+# --------------------------------------------------------------------------
+# ridge arm
+# --------------------------------------------------------------------------
 def _fit_ridge(X_train: np.ndarray, Y_train: np.ndarray, cfg: HeadConfig):
     """Ridge (fixed alpha or RidgeCV) with optional Y standardization."""
     if cfg.y_standardize:
@@ -122,30 +85,102 @@ def _fit_ridge(X_train: np.ndarray, Y_train: np.ndarray, cfg: HeadConfig):
     return r, sy
 
 
-def _predict_ridge(r, sy, X_all):
+def _predict_ridge(r, sy, X_all: np.ndarray) -> np.ndarray:
     Y_pred = r.predict(X_all)
     if sy is not None:
         Y_pred = sy.inverse_transform(Y_pred)
     return Y_pred
 
 
-def _fit_knn_and_predict(X_train, X_all, Y_train, cfg: HeadConfig):
-    """kNN cosine softmax weighted predict."""
+# --------------------------------------------------------------------------
+# kNN arm
+# --------------------------------------------------------------------------
+def _feature_weights(X_train: np.ndarray, Y_train: np.ndarray,
+                     cfg: HeadConfig) -> Optional[np.ndarray]:
+    """Supervised column weights for the kNN metric, fitted on train targets only.
+
+    Most of the 8700 columns carry no information about the response. Weighting
+    each column by how strongly it covaries with the target block makes
+    neighbour selection target-aware. The target block is first reduced to
+    `knn_feat_rank` SVD components, so the correlation is one small matmul
+    rather than a full (n_features x n_genes) product.
+    """
+    if cfg.knn_feat_weight == 'none':
+        return None
+    if cfg.knn_feat_weight != 'target_corr':
+        raise ValueError(f"Unknown knn_feat_weight: {cfg.knn_feat_weight!r}")
+    if min(Y_train.shape) < 2:
+        return None
+    k = int(min(cfg.knn_feat_rank, min(Y_train.shape) - 1))
+    sv = TruncatedSVD(n_components=k, random_state=0).fit(Y_train)
+    Yr = Y_train @ sv.components_.T
+    Xc = X_train - X_train.mean(axis=0, keepdims=True)
+    Yc = Yr - Yr.mean(axis=0, keepdims=True)
+    xs = np.sqrt((Xc ** 2).sum(axis=0)) + 1e-12
+    ys = np.sqrt((Yc ** 2).sum(axis=0)) + 1e-12
+    C = (Xc.T @ Yc) / xs[:, None] / ys[None, :]
+    wf = np.sqrt((C ** 2).sum(axis=1))
+    wf = wf / (wf.mean() + 1e-12)
+    return (wf ** cfg.knn_feat_pow).astype(np.float32)
+
+
+def _knn_arm(X_train: np.ndarray, X_pred: np.ndarray, Y_train: np.ndarray,
+             cfg: HeadConfig) -> np.ndarray:
+    """Weighted-average kNN with deterministic ties and adaptive bandwidth."""
+    wf = _feature_weights(X_train, Y_train, cfg)
+    if wf is not None:
+        X_train = X_train * wf[None, :]
+        X_pred = X_pred * wf[None, :]
+
     if cfg.knn_metric == 'cosine':
         Xtr_n = normalize(X_train, axis=1)
-        Xal_n = normalize(X_all, axis=1)
+        Xpr_n = normalize(X_pred, axis=1)
     else:
-        Xtr_n, Xal_n = X_train, X_all
-    K_eff = min(cfg.knn_K, len(X_train))
-    nn = NearestNeighbors(n_neighbors=K_eff, metric=cfg.knn_metric).fit(Xtr_n)
-    d, idx = nn.kneighbors(Xal_n)
-    w = np.exp(-cfg.knn_tau * d)
-    w /= (w.sum(axis=1, keepdims=True) + 1e-12)
+        Xtr_n, Xpr_n = X_train, X_pred
+
+    n_train = len(X_train)
+    K_eff = min(cfg.knn_K, n_train)
+    # 'expand' needs headroom to see rows tied with the K-th neighbour.
+    K_query = min(n_train, K_eff + (32 if cfg.knn_tie_break == 'expand' else 0))
+    nn = NearestNeighbors(n_neighbors=K_query, metric=cfg.knn_metric).fit(Xtr_n)
+    d, idx = nn.kneighbors(Xpr_n)
+
+    d_k = d[:, K_eff - 1][:, None]
+    if cfg.knn_tie_break == 'expand':
+        # Deterministic neighbour set: keep every train row within the K-th
+        # distance, with a float32 epsilon so ties that differ only by SIMD
+        # reduction order are kept on every CPU.
+        mask = d <= (d_k + 1e-6 * np.maximum(d_k, 1.0))
+    elif cfg.knn_tie_break == 'none':
+        mask = np.zeros_like(d, dtype=bool)
+        mask[:, :K_eff] = True
+    else:
+        raise ValueError(f"Unknown knn_tie_break: {cfg.knn_tie_break!r}")
+
+    if cfg.knn_adaptive_bw == 'none':
+        w = np.exp(-cfg.knn_tau * d)
+    elif cfg.knn_adaptive_bw == 'mean':
+        # Measure each row's distances in units of its own mean neighbour
+        # distance, then renormalise by the median across rows so that tau keeps
+        # its global meaning and a typical row is left unchanged.
+        cnt = np.maximum(mask.sum(axis=1, keepdims=True), 1)
+        scale = np.where(mask, d, 0.0).sum(axis=1, keepdims=True) / cnt
+        scale = np.maximum(scale, 1e-8)
+        scale = scale / max(float(np.median(scale)), 1e-8)
+        w = np.exp(-cfg.knn_tau * (d / scale))
+    else:
+        raise ValueError(f"Unknown knn_adaptive_bw: {cfg.knn_adaptive_bw!r}")
+
+    w = np.where(mask, w, 0.0)
+    w = w / (w.sum(axis=1, keepdims=True) + 1e-12)
     return np.einsum("nk,nkp->np", w, Y_train[idx])
 
 
-def _fit_binary_ridge(X_train, X_all, Y_train, cfg: HeadConfig):
-    """Ridge on top-P%-binarized Y. Signed or unsigned per cfg."""
+# --------------------------------------------------------------------------
+# binary arm
+# --------------------------------------------------------------------------
+def _fit_binary_ridge(X_train, X_pred, Y_train, cfg: HeadConfig) -> np.ndarray:
+    """RidgeCV on the top-`top_p`%-binarized target. Signed or unsigned per cfg."""
     Y_bin = np.zeros_like(Y_train)
     p = cfg.top_p / 100.0
     for j in range(Y_train.shape[1]):
@@ -157,63 +192,57 @@ def _fit_binary_ridge(X_train, X_all, Y_train, cfg: HeadConfig):
             thr = np.quantile(col, 1 - p)
             Y_bin[:, j] = (col >= thr).astype(np.float32)
     r = RidgeCV(alphas=list(cfg.bin_ridge_alphas)).fit(X_train, Y_bin)
-    return r.predict(X_all)
+    return r.predict(X_pred)
 
 
+# --------------------------------------------------------------------------
+# blend
+# --------------------------------------------------------------------------
+def _blend(Y_r, Y_k, Y_b, weights, z: bool) -> np.ndarray:
+    wr, wk, wb = weights
+    if wr > 0 and wk == 0 and wb == 0:
+        return Y_r
+    parts = []
+    for w, Y in ((wr, Y_r), (wk, Y_k), (wb, Y_b)):
+        if Y is not None:
+            parts.append(w * (_zs(Y) if z else Y))
+    return sum(parts)
+
+
+# --------------------------------------------------------------------------
+# entry point
+# --------------------------------------------------------------------------
 def head_predict(E_full: np.ndarray,
                  train_idx: np.ndarray,
                  Y_train: np.ndarray,
                  cfg: HeadConfig,
                  test_idx: np.ndarray = None) -> np.ndarray:
-    """Predict Y per head config.
-
-    Two output modes controlled by `test_idx`:
-
-    - `test_idx is None` (default, regression heads): fits on `E[train_idx]`,
-      predicts on ALL rows of E, returns `(n_all, n_targets)`. Blending
-      z-scoring (if enabled) is computed across all rows. Callers that only
-      want test rows slice `Y_out[test_idx]` themselves.
-
-    - `test_idx is not None` (Systema head): fits on `E[train_idx]`, predicts
-      only on `E[test_idx]`, returns `(n_test, n_targets)`. Blending
-      z-scoring is computed across test rows only, matching the champion
-      `res_wr20_wk70_wb10.predict` semantics.
+    """Predict the response for every row of `E_full` (or just `test_idx`).
 
     Args:
-      E_full: (n_perts, D) feature matrix. D depends on cfg.feature_subset --
-        for `systema_native_8604`, caller passes the 8604-D matrix directly;
-        for `full_11680` variants, caller passes the shared 11680-D matrix.
-      train_idx: indices of training perts within E_full.
-      Y_train:   (n_train, n_targets) training targets.
-                  For regression heads: delta from control.
-                  For hit head:        AUCell phenotype scores.
-                  For Systema:         raw log1p post-expression Y_train_post.
-      cfg:       HeadConfig with all parameters.
-      test_idx:  optional test-row indices. If None, predict on all rows.
+      E_full:    (n_perts, 8700) shared feature matrix, from
+                 `tusoperturb.feature_builder.build_features`.
+      train_idx: indices of the training perturbations within `E_full`.
+      Y_train:   (n_train, n_targets) training responses, in `train_idx` order.
+      cfg:       `SHARED_HEAD` or `HIT_HEAD`.
+      test_idx:  optional row indices to predict. If None, predict every row.
 
-    Returns:
-      Y_out: (n_all, n_targets) or (n_test, n_targets) depending on test_idx.
-             For target_shape='residual_pert_mean', pert_mean is added back
-             after per-column rescaling.
+    Two output modes, both fitted on `train_idx` only:
+
+    - `test_idx is None`: returns `(n_perts, n_targets)`; callers that only
+      want the scored rows slice the result themselves.
+    - `test_idx is not None`: returns `(len(test_idx), n_targets)`. Any pooling
+      across rows -- per-arm z-scoring, and the adaptive kNN bandwidth's median
+      normalisation -- is then computed over the predicted rows only. The
+      Systema path uses this mode.
     """
-    # 1. Feature selection
-    E = _select_features(E_full, cfg)
-    # 2. Scaling (fit on train rows only)
-    Xtr, Xal = _apply_scaler(E[train_idx], E, cfg)
-    # 3. Block weights (post-scaling)
-    offsets = _feature_subset_offsets(cfg)
-    Xtr = _apply_block_weights(Xtr, cfg, offsets)
-    Xal = _apply_block_weights(Xal, cfg, offsets)
+    # 1-2. scale on train rows, then weight the co-essentiality columns.
+    Xtr, Xal = _apply_scaler(E_full[train_idx], E_full, cfg)
+    Xtr = _apply_emb_weight(Xtr, cfg)
+    Xal = _apply_emb_weight(Xal, cfg)
+    Xpred = Xal[test_idx] if test_idx is not None else Xal
 
-    # 3b. If test_idx is provided, restrict prediction rows to just those.
-    #     Ridge/kNN/binary arms all fit on Xtr only; only the "predict" side
-    #     changes.
-    if test_idx is not None:
-        Xpred = Xal[test_idx]
-    else:
-        Xpred = Xal
-
-    # 4. Target shaping
+    # 3. target shaping
     if cfg.target_shape == 'raw_delta':
         Y_target = Y_train.astype(np.float32)
         pert_mean = np.zeros(Y_train.shape[1], dtype=np.float32)
@@ -223,38 +252,28 @@ def head_predict(E_full: np.ndarray,
     else:
         raise ValueError(f"Unknown target_shape: {cfg.target_shape}")
 
+    # 4-6. arms (skip any arm with zero blend weight)
     wr, wk, wb = cfg.weights
-
-    # 5. Fit + predict per arm (skip disabled arms).
     Y_r = _predict_ridge(*_fit_ridge(Xtr, Y_target, cfg), Xpred) if wr > 0 else None
-    Y_k = _fit_knn_and_predict(Xtr, Xpred, Y_target, cfg) if wk > 0 else None
+    Y_k = _knn_arm(Xtr, Xpred, Y_target, cfg) if wk > 0 else None
     Y_b = _fit_binary_ridge(Xtr, Xpred, Y_target, cfg) if wb > 0 else None
+    Y_pred = _blend(Y_r, Y_k, Y_b, (wr, wk, wb), cfg.y_z_score_arms)
 
-    # 6. Blend
-    if wr > 0 and wk == 0 and wb == 0:
-        # Plain-Ridge fast path (A_v2_193-style: no z-scoring, no blend).
-        Y_pred = Y_r
-    else:
-        parts = []
-        if Y_r is not None:
-            parts.append(wr * (_zs(Y_r) if cfg.y_z_score_arms else Y_r))
-        if Y_k is not None:
-            parts.append(wk * (_zs(Y_k) if cfg.y_z_score_arms else Y_k))
-        if Y_b is not None:
-            parts.append(wb * (_zs(Y_b) if cfg.y_z_score_arms else Y_b))
-        Y_pred = sum(parts)
-
-    # 7. Undo target shaping
+    # 7. undo the target shaping, applying the amplitude factor
+    lam = float(cfg.shrink)
     if cfg.target_shape == 'residual_pert_mean':
         if cfg.y_z_score_arms:
-            # `_rescale_to_train`: match Y_pred's std/mean to Y_target's per column.
-            per_col_std_tr = Y_target.std(axis=0, keepdims=True) + 1e-8
+            # Per-arm z-scoring destroys the scale, so the prediction is put back
+            # on the training residual scale per column. At correlation r the
+            # MSE-optimal amplitude is r * std_tr, which is what `lam` sets.
+            per_col_std_tr = (lam * Y_target.std(axis=0, keepdims=True)) + 1e-8
             per_col_std_pr = Y_pred.std(axis=0, keepdims=True) + 1e-8
             Y_pred = Y_pred * (per_col_std_tr / per_col_std_pr)
             per_col_mean_tr = Y_target.mean(axis=0, keepdims=True)
             Y_pred = Y_pred - Y_pred.mean(axis=0, keepdims=True) + per_col_mean_tr
+        elif lam != 1.0:
+            Y_pred = Y_pred * lam
         Y_out = Y_pred + pert_mean[None, :]
     else:
-        Y_out = Y_pred
-
-    return Y_out.astype(np.float32)
+        Y_out = Y_pred if lam == 1.0 else Y_pred * lam
+    return Y_out

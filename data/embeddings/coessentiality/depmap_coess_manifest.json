@@ -1,0 +1,28 @@
+{
+  "source": "DepMap CRISPRGeneEffect.csv (Chronos gene effect, public release)",
+  "n_genes": 18435,
+  "n_cell_lines": 1186,
+  "nan_frac_before": 0.03522480654192228,
+  "preprocessing": "strip Entrez ids from column labels; transpose to genes x cell lines; collapse duplicate symbols by nanmean; per-gene mean impute; drop zero-variance and non-finite genes; per-gene centre; TruncatedSVD",
+  "leakage": "unsupervised TruncatedSVD on the external DepMap matrix only; no benchmark target, split index or perturbation label enters the fit",
+  "shipped_components": {
+    "64": {
+      "file": "depmap_coess_64.npy",
+      "shape": [
+        18435,
+        64
+      ],
+      "explained_variance_ratio_sum": 0.3414
+    },
+    "32": {
+      "file": "depmap_coess_32.npy",
+      "shape": [
+        18435,
+        32
+      ],
+      "explained_variance_ratio_sum": 0.269
+    }
+  },
+  "gene_names": "depmap_coess_gene_names.json, row order for both tables",
+  "rebuild": "scripts/gen_embeddings/build_coessentiality_embeddings.py"
+}

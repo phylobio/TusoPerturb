@@ -1,14 +1,15 @@
-"""TusoPerturb public API: 3 predict_* functions.
+"""TusoPerturb public API: 4 predict_* functions.
 
-Each function wraps the harmonized `head_predict` with the correct
-per-benchmark HeadConfig and IO shaping. Signatures mirror the source
-codebases (final_methodv3 `build_pred_adata` / `build_pred_hit` and
-systema_r1 `predict`).
+Each function wraps `head_predict` with the correct HeadConfig and IO shaping.
+Signatures are unchanged from TusoPerturb v1, so an existing harness keeps
+working; what changed is the feature space and the head table underneath (see
+ARCHITECTURE.md).
+
+Four of the five public keys resolve to the same `SHARED_HEAD`; only
+`perturbhd_hit` uses a second config.
 """
 from __future__ import annotations
-from pathlib import Path
 from typing import Optional
-import sys
 
 import numpy as np
 import pandas as pd
@@ -16,7 +17,8 @@ import pandas as pd
 from .heads import HEAD_CONFIGS, HeadConfig
 from .predictor import head_predict
 from . import feature_builder as fb
-from .feature_builder import build_shared_features, DS_TO_PAPER_KEY
+from .feature_builder import build_features, build_shared_features, DS_TO_PAPER_KEY
+
 
 # perturb_2026.loop.helpers.build_pred_adata_from_matrix expects a specific
 # AnnData wrapper -- import lazily so this module is importable even if
@@ -46,18 +48,15 @@ def predict_regression(master, dataset: str, seed: int,
                        cfg: Optional[HeadConfig] = None):
     """Predict per-pert Y_delta for the CellSim / scPerturB / PerturbHD-reg benchmarks.
 
-    Reproduces final_methodv3.A_v2_193.build_pred_adata verbatim when
-    cfg = PRIOR_A_v2_193 (the default via head='cellsim' / 'scperturb' / 'perturbhd_reg').
-
     Args:
       master:  reference master AnnData (used for train/test split alignment
                via build_pred_adata_from_matrix; not touched by head_predict).
       dataset: one of 'nadig25hepg2', 'nadig25jurkat', 'replogle22k562', 'replogle22rpe1'.
-      seed:    ignored by the regression path (A_v2_193 is deterministic, and
-               regression heads don't depend on split-{seed}); kept in signature
-               for API uniformity with the hit head.
-      head:    which HeadConfig row to use. Defaults to 'cellsim' which is
-               PRIOR_A_v2_193 (same as 'scperturb', 'perturbhd_reg').
+      seed:    ignored by the regression path (the head is deterministic and
+               does not depend on split-{seed}); kept in the signature for
+               uniformity with the hit head.
+      head:    which HeadConfig row to use. 'cellsim', 'scperturb' and
+               'perturbhd_reg' are the same object (SHARED_HEAD).
       cfg:     override HeadConfig if provided.
 
     Returns:
@@ -99,13 +98,11 @@ def predict_hit(master, dataset: str, seed: int,
                 cfg: Optional[HeadConfig] = None) -> pd.DataFrame:
     """Predict AUCell phenotype scores for the PerturbHD-hit benchmark.
 
-    Reproduces final_methodv3.build_pred_hit_v7 verbatim when cfg = PRIOR_R17_C.
-
     Args:
       master:  reference master AnnData.
       dataset: one of 'nadig25hepg2', 'nadig25jurkat', 'replogle22k562', 'replogle22rpe1'.
       seed:    which split-{seed} column in the AUCell pivot to use as train/test.
-      cfg:     override HeadConfig; default HEAD_CONFIGS['perturbhd_hit'] = PRIOR_R17_C.
+      cfg:     override HeadConfig; default HEAD_CONFIGS['perturbhd_hit'] = HIT_HEAD.
 
     Returns:
       DataFrame with columns ['pert', 'pheno', 'hit_score'] restricted to
@@ -116,8 +113,7 @@ def predict_hit(master, dataset: str, seed: int,
 
     # Load pheno pivot (targets).
     paper_key = DS_TO_PAPER_KEY[dataset]
-    aucell_path = fb.MEAN_EFFECT_DIR / f'{paper_key}-h.all-all.pq'
-    df = pd.read_parquet(aucell_path)
+    df = pd.read_parquet(fb.mean_effect_path(paper_key))
     df = df.drop_duplicates(subset=['pert', 'pheno'], keep=False)
     pivot = df.pivot(index='pert', columns='pheno', values='mean_diff')
     split_col = f'split-{seed}' if seed in [1, 2, 3] else 'split-1'
@@ -163,23 +159,19 @@ def predict_systema(panel_master, seed: int,
                     cfg: Optional[HeadConfig] = None) -> np.ndarray:
     """Predict full log1p post-expression for the Systema benchmark.
 
-    Reproduces systema_r1.res_wr20_wk70_wb10.predict verbatim when
-    cfg = PRIOR_SYSTEMA.
-
     Args:
       panel_master: PanelMaster object with .all_perts / .train_perts /
                     .test_perts / .Y_train_post / .donor_id attributes.
       seed:         panel seed (used upstream for panel_master construction;
                     predict itself is deterministic).
-      cfg:          override HeadConfig; default HEAD_CONFIGS['systema'] = PRIOR_SYSTEMA.
+      cfg:          override HeadConfig; default HEAD_CONFIGS['systema'] = SHARED_HEAD.
 
     Returns:
-      Y_out: (n_test_perts, n_genes) predicted post-expression for panel_master.test_perts.
+      Y_test: (n_test_perts, n_genes) predicted post-expression for
+      panel_master.test_perts.
     """
     if cfg is None:
         cfg = HEAD_CONFIGS['systema']
-
-    from .systema_adapter import build_systema_features
 
     all_perts = list(panel_master.all_perts)
     pert2idx = {p: i for i, p in enumerate(all_perts)}
@@ -188,11 +180,12 @@ def predict_systema(panel_master, seed: int,
 
     donor_id = getattr(panel_master, 'donor_id', 'K562')
 
-    E, offsets, stats = build_systema_features(all_perts, donor_id)
+    E, _, _ = build_features(all_perts, donor_id)
     Y_train_post = np.asarray(panel_master.Y_train_post, dtype=np.float32)
 
-    # For head_predict: E is the 8604-D matrix, train_idx = tr, test_idx = te.
-    # test_idx=te ensures Ridge/kNN/binary arms are computed only on test rows
-    # so the z-blend matches the champion `res_wr20_wk70_wb10` semantics.
+    # test_idx=te restricts the ridge / kNN / binary arms to the test rows, so
+    # the adaptive kNN bandwidth is the median over the test batch. This is the
+    # batching the sealed Systema run used; the other four benchmarks predict
+    # every row in one batch (test_idx=None).
     Y_test = head_predict(E, tr, Y_train_post, cfg, test_idx=te)
     return Y_test

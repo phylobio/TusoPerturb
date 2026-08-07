@@ -26,23 +26,42 @@ The result contains:
 
 ## Model configuration
 
-The hit-prediction configuration removes the 3,072-dimensional GenePT block and
-uses the remaining 8,608 features. After robust scaling, it combines:
+This is the only key that uses the second head. It reads the same 8,700-column
+feature matrix as every other key, with the co-essentiality columns at unit
+amplitude. After robust scaling it combines:
 
-- a ridge model with weight 0.10;
-- cosine nearest-neighbor target transfer with weight 0.65; and
-- an unsigned top-2% binary-response ridge model with weight 0.25.
+- a `RidgeCV` model with weight 0.10;
+- unweighted cosine nearest-neighbour target transfer at K=13, weight 0.65; and
+- an unsigned top-2% binary-response ridge model, weight 0.25;
 
-The configuration is defined in
-[`tusoperturb/heads.py`](../../tusoperturb/heads.py) and described in
-[`ARCHITECTURE.md`](../../ARCHITECTURE.md).
+with each arm z-scored across the prediction rows before blending, on the raw
+target and with no amplitude factor.
+
+The hit head differs from the shared head in exactly 14 fields, all of them head
+parameters; the feature space is identical.
+[`heads.head_deviation()`](../../tusoperturb/heads.py) returns that list, and
+`heads.assert_two_head()` fails if the two heads ever diverge in anything else.
+
+## Recorded results
+
+| Metric | Direction | hepg2 | jurkat | k562 | rpe1 | v2 better |
+|---|---|---|---|---|---|---|
+| `recall_at_budget_0.05` | higher | 0.4953 / 0.468 | 0.3906 / 0.3772 | 0.4833 / 0.4787 | 0.484 / 0.45 | 4/4 |
+| `recall_at_fdr_0.20` | higher | 0.1333 / 0.1173 | 0.0549 / 0.0551 | 0.094 / 0.08867 | 0.1527 / 0.1527 | 3/4 |
+
+Each cell is **TusoPerturb v2 / old TusoPerturb**, mean over 3 seeds. v2 is better in 7 of 8 scored cells.
+
+`recall_at_budget_0.05` is recall among the top 5% of ranked candidates;
+`recall_at_fdr_0.20` is recall at a 20% false-discovery threshold. Both are
+higher-better. Standard deviations are in
+[`champion/params.json`](../../champion/params.json).
 
 ## Required inputs
 
 ### Staged dataset
 
-The adapter uses the same shared feature builder as the expression workflows.
-It therefore requires a supported stage from
+The adapter uses the same shared feature builder as the expression workflows. It
+therefore requires a supported stage from
 `perturb_2026.loop.gpu_stage_loader.load_stage(dataset)` and the bundled
 reference features.
 
@@ -68,6 +87,9 @@ Set the variable before starting Python:
 export TUSOPERTURB_MEAN_EFFECT_DIR=/path/to/mean_effects_aucell
 ```
 
+If it is unset, `predict_hit` raises a `FileNotFoundError` naming the expected
+file. Every other workflow runs without it.
+
 Each file must contain:
 
 | Column | Description |
@@ -77,11 +99,10 @@ Each file must contain:
 | `mean_diff` | Training target value. |
 | `split-1`, `split-2`, `split-3` | Split labels containing `train`, `val`, or `test`. |
 
-Each `(pert, pheno)` pair should be unique. The current implementation removes
-all rows belonging to duplicated pairs before pivoting the table.
+Each `(pert, pheno)` pair should be unique. The implementation removes all rows
+belonging to duplicated pairs before pivoting the table.
 
-Use `seed=1`, `seed=2`, or `seed=3`. Other values currently fall back to
-`split-1`.
+Use `seed=1`, `seed=2`, or `seed=3`. Other values fall back to `split-1`.
 
 ## Example
 
@@ -101,8 +122,8 @@ assert list(pred_df.columns) == ["pert", "pheno", "hit_score"]
 pred_df.to_parquet("perturbhd-hit-nadig25hepg2-seed1.parquet", index=False)
 ```
 
-The current implementation does not inspect `master`, but the argument remains
-part of the public signature for consistency with the other benchmark adapters.
+The implementation does not inspect `master`, but the argument remains part of
+the public signature for consistency with the other adapters.
 
 Only perturbations present in both the phenotype table and the staged feature
 matrix are used. Returned rows are restricted to the selected split's `val` and
@@ -113,6 +134,3 @@ matrix are used. Returned rows are restricted to the selected split's `val` and
 Pass the long-form table to the PerturbHD hit-prediction scorer for the same
 phenotype-table and split release. Validate the intersection of perturbations
 before interpreting a score; silently missing labels reduce the evaluated set.
-
-The project-recorded values are summarized in
-[`report.md`](../../report.md#perturbhd-hit-prediction).

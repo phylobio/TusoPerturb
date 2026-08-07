@@ -1,9 +1,6 @@
-"""Systema feature adapter: builds the 8604-D per-pert feature matrix.
+"""Annotation adapter: builds the 8604-D annotation stack for every benchmark.
 
-Wraps `scripts/systema_features.py` from the systema_r1 codebase (vendored
-here so TusoPerturb is self-contained).
-
-Blocks (in champion order, same as systema_r1):
+Blocks (in order):
   reactome  (1816)
   go_bp     (5406)
   hallmark  (50)
@@ -13,9 +10,15 @@ Blocks (in champion order, same as systema_r1):
   depmap    (5)
 Total: 8604 dims.
 
-Systema donors are mapped to DepMap cell lines via `DEPMAP_MAP`.
-Combinatorial perts (Norman `X+Y`) combine per-gene rows by SUM for multi-hot
-indicator blocks and MEAN for dense-embedding blocks.
+This block stack originated as the Systema-native feature space. In v2 it is
+the *shared* feature space: all five benchmarks are built here, then the
+96-column co-essentiality block is appended (see
+`tusoperturb.feature_builder`). Nothing is sliced out of a wider matrix, so
+each benchmark gets its own cell line's DepMap block rather than a fallback.
+
+Donors are mapped to DepMap cell lines via `DEPMAP_MAP`. Combinatorial perts
+(Norman `X+Y`) combine per-gene rows by SUM for multi-hot indicator blocks and
+MEAN for dense-embedding blocks.
 """
 from __future__ import annotations
 
@@ -30,30 +33,29 @@ from scipy import sparse
 
 
 # --- reference-data resolution ------------------------------------------------
-# Prefer vendored TusoPerturb/data/embeddings/{ref,depmap_essentiality}/; fall
-# back to the shared-workspace copies used during method development.
+# Reference data resolution: environment override first, then the copies
+# vendored under TusoPerturb/data/embeddings/.
 _HERE = Path(__file__).resolve().parent
 _PKG_ROOT = _HERE.parent  # .../TusoPerturb
 
-_VENDORED_REF = _PKG_ROOT / "data" / "embeddings" / "ref"
-_LEGACY_REF   = Path("/mnt/shared-workspace/biomni-method/perturb-2026/data/ref")
-_ENV_REF      = os.environ.get("TUSOPERTURB_REF_DIR")
-if _ENV_REF and Path(_ENV_REF).is_dir():
-    REF_DIR = Path(_ENV_REF)
-elif _VENDORED_REF.is_dir():
-    REF_DIR = _VENDORED_REF
-else:
-    REF_DIR = _LEGACY_REF
 
-_VENDORED_DEPMAP = _PKG_ROOT / "data" / "embeddings" / "depmap_essentiality"
-_LEGACY_DEPMAP   = Path("/mnt/shared-workspace/biomni-method/perturb-2026/data/orth_info/depmap_essentiality")
-_ENV_DEPMAP      = os.environ.get("TUSOPERTURB_DEPMAP_DIR")
-if _ENV_DEPMAP and Path(_ENV_DEPMAP).is_dir():
-    DEPMAP_DIR = Path(_ENV_DEPMAP)
-elif _VENDORED_DEPMAP.is_dir():
-    DEPMAP_DIR = _VENDORED_DEPMAP
-else:
-    DEPMAP_DIR = _LEGACY_DEPMAP
+def _resolve_dir(env_var: str, vendored: Path, what: str) -> Path:
+    env = os.environ.get(env_var)
+    if env and Path(env).is_dir():
+        return Path(env)
+    if vendored.is_dir():
+        return vendored
+    raise FileNotFoundError(
+        f"{what} not found. Expected {vendored} (source checkout) or "
+        f"${env_var} pointing at a directory containing them.")
+
+
+REF_DIR = _resolve_dir("TUSOPERTURB_REF_DIR",
+                       _PKG_ROOT / "data" / "embeddings" / "ref",
+                       "Annotation reference files")
+DEPMAP_DIR = _resolve_dir("TUSOPERTURB_DEPMAP_DIR",
+                          _PKG_ROOT / "data" / "embeddings" / "depmap_essentiality",
+                          "DepMap essentiality tables")
 
 
 BLOCK_NAMES = ("reactome", "go_bp", "hallmark", "progeny", "collectri", "string", "depmap")
@@ -146,15 +148,41 @@ def _depmap_matrix(cell_line: str):
     return _CACHE[key]
 
 
-# Best-guess DepMap cell-line mapping per Systema donor.
+# Donor -> vendored DepMap cell line.
+#
+# v1 had no HepG2 or Jurkat entry, so every PerturbHD-family dataset that went
+# through this adapter silently took the K562 dependency block. The sealed v2
+# run carried each dataset's own line, so the map does too.
 DEPMAP_MAP = {
+    # Lines vendored under data/embeddings/depmap_essentiality/.
     "K562": "K562",
-    "A549": "K562",      # A549 not in DepMap set -> K562 fallback
     "RPE1": "RPE1",
+    "HepG2": "HepG2",
+    "Jurkat": "Jurkat",
+    # Systema donors with no vendored DepMap line -> K562.
+    "A549": "K562",
     "iPSC": "K562",
     "melanoma": "K562",
     "H1_hESC": "K562",
+    # `gpu_stage_loader` reports `donor_id` as the dataset key rather than the
+    # cell line, so the four PerturbHD-family keys resolve here too. Without
+    # them `build_features(perts, stage['donor_id'])` would take the K562
+    # fallback for HepG2, Jurkat and RPE1.
+    "replogle22k562": "K562",
+    "replogle22rpe1": "RPE1",
+    "nadig25hepg2": "HepG2",
+    "nadig25jurkat": "Jurkat",
 }
+_DEPMAP_MAP_UPPER = {k.upper(): v for k, v in DEPMAP_MAP.items()}
+
+
+def resolve_depmap_line(donor_id: str) -> str:
+    """Donor id or dataset key -> DepMap cell line, case-insensitively.
+
+    Unknown donors fall back to K562, as in v1; the fallback now only fires for
+    cell lines that genuinely have no vendored DepMap table.
+    """
+    return _DEPMAP_MAP_UPPER.get(str(donor_id).upper(), "K562")
 
 
 def build_systema_features(
@@ -166,7 +194,7 @@ def build_systema_features(
     n = len(perts)
     parts, offsets, stats = [], {}, {}
     off = 0
-    depmap_cl = DEPMAP_MAP.get(donor_id, "K562")
+    depmap_cl = resolve_depmap_line(donor_id)
 
     if "reactome" in blocks:
         m, idx = _reactome_matrix()

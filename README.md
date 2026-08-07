@@ -1,14 +1,27 @@
 # TusoPerturb
 
-TusoPerturb is a research Python package for predicting transcriptional responses to genetic perturbations. It combines gene embeddings and curated biological annotations with a shared prediction framework for CellSimBench, scPerturBench, PerturbHD, and Systema.
+TusoPerturb is a research Python package for predicting transcriptional responses to genetic perturbations. It combines curated biological annotations with a co-essentiality basis derived from DepMap, and serves CellSimBench, scPerturBench, PerturbHD, and Systema through one prediction framework.
 
-![TusoPerturb model overview](tusoperturb_overview.png)
+Version 2 replaces the per-benchmark configurations of version 1 with **one feature space and two heads**. The public API is unchanged.
+
+## What changed in v2
+
+| | v1.0.0 | v2.0.0 |
+|---|---|---|
+| Feature space | 11,680-D (GenePT + annotations + baseline) for three benchmarks, 8,604-D for Systema, 8,608-D for hit prediction | one 8,700-D space for all five keys |
+| Language-model embeddings | 3,072-D GenePT block | none |
+| Perturbation-similarity signal | none | 96 co-essentiality columns from DepMap CRISPR gene effect |
+| Configurations | five per-benchmark configs, three distinct objects | two `HeadConfig` objects |
+| Block weights | `go_bp × 0.67`, `string × 1.5`, `depmap × 10.0` | none |
+| External API keys required | OpenAI, for the GenePT block | none |
+
+The 8,700-D space is the seven annotation blocks (8,604 columns) with the co-essentiality blocks appended (96 columns). Dropping GenePT removes the only component that required a paid external service and the only one that could not be regenerated from public files bundled or scripted in this repository.
 
 ## Overview
 
-Each supported workflow follows the same basic path: build a feature matrix for the perturbations, select a benchmark configuration, run [`head_predict`](tusoperturb/predictor.py), and format the result for the corresponding scorer.
+Every workflow follows the same path: build a feature matrix for the perturbations, select a head, run [`head_predict`](tusoperturb/predictor.py), and format the result for the corresponding scorer.
 
-The repository includes static reference features from Reactome, Gene Ontology, MSigDB Hallmark, PROGENy, CollecTRI, STRING, and DepMap. Benchmark datasets, precomputed dataset stages, and upstream scoring harnesses are not bundled with the package.
+The repository includes static reference features from Reactome, Gene Ontology, MSigDB Hallmark, PROGENy, CollecTRI, STRING, and DepMap, plus the co-essentiality basis. Benchmark datasets, precomputed dataset stages, and upstream scoring harnesses are not bundled.
 
 ## Installation
 
@@ -27,7 +40,7 @@ An editable install is recommended because the reference data lives in [`data/em
 
 ### Systema
 
-The Systema wrapper builds its feature matrix from the bundled reference data. It expects a `PanelMaster` object from the Systema benchmark harness:
+The Systema wrapper builds its feature matrix entirely from bundled data. It expects a `PanelMaster` object from the Systema benchmark harness:
 
 ```python
 from tusoperturb import predict_systema
@@ -38,8 +51,6 @@ Y_test = predict_systema(panel_master, seed=1)
 `panel_master` must provide `all_perts`, `train_perts`, `test_perts`, and `Y_train_post`. A `donor_id` attribute is used when available. The returned array has one row per test perturbation and one column per gene.
 
 ### CellSimBench and scPerturBench
-
-The expression-response wrapper returns benchmark-compatible predictions in an `AnnData` object:
 
 ```python
 import anndata as ad
@@ -77,19 +88,39 @@ Y_pred = head_predict(E, train_idx, Y_train, HEAD_CONFIGS["cellsim"])
 
 The public package exports are listed in [`tusoperturb/__init__.py`](tusoperturb/__init__.py).
 
+## Recorded results
+
+v2 was scored once against a sealed held-out test set and compared cell by cell with the old TusoPerturb.
+
+| Benchmark | Datasets | Metrics | Scored cells | v2 better | old better |
+|---|---|---|---|---|---|
+| `cellsim` | 4 | 16 | 64 | 54 | 10 |
+| `scperturb` | 4 | 3 | 12 | 7 | 5 |
+| `perturbhd_reg` | 4 | 6 | 24 | 24 | 0 |
+| `perturbhd_hit` | 4 | 2 | 8 | 7 | 1 |
+| `systema` | 7 | 8 (+1 not scored) | 56 | 38 | 18 |
+| **total** |  |  | **164** | **130** | **34** |
+
+The comparison baseline is the frozen TusoPerturb head table as it stood when the sealed run was executed. For `perturbhd_hit` that is the v1.0.0 configuration unchanged; for the other four keys it is the stronger post-transfer table adopted after a pre-registered 2×2 test, not the weaker v1.0.0 table. This is recorded in `comparison_baseline` in [`champion/params.json`](champion/params.json).
+
+Every scored cell — five benchmarks, 19 dataset instances, 164 benchmark × dataset × metric cells — is stored in [`champion/params.json`](champion/params.json) with both values, the metric direction, and the seed count. Per-benchmark tables are on the pages under [`docs/benchmarks/`](docs/benchmarks/). Seven Systema `composite_dev` cells are recorded but flagged non-scoring and excluded from every count.
+
+Split integrity for the sealed run is documented in [`docs/leakage.md`](docs/leakage.md).
+
 ## Data requirements
 
-The following assets are included in the repository:
+Included in the repository:
 
 - pathway, regulatory, and network references under [`data/embeddings/ref/`](data/embeddings/ref/);
-- cell-line-specific DepMap features under [`data/embeddings/depmap_essentiality/`](data/embeddings/depmap_essentiality/).
+- cell-line DepMap essentiality features under [`data/embeddings/depmap_essentiality/`](data/embeddings/depmap_essentiality/);
+- the co-essentiality basis under [`data/embeddings/coessentiality/`](data/embeddings/coessentiality/).
 
 The CellSimBench, scPerturBench, and PerturbHD wrappers additionally require:
 
 - the benchmark master `.h5ad` files;
-- a staged cache for each dataset containing the GenePT features, training targets, perturbation metadata, and control baseline;
+- a staged cache for each dataset containing the training targets, perturbation metadata, and control baseline;
 - the external `perturb_2026` package, which provides the stage loader and output-shaping utilities;
-- PerturbHD AUCell mean-effect parquet files when using `predict_hit`.
+- PerturbHD AUCell mean-effect Parquet files when using `predict_hit`.
 
 Supported staged-dataset identifiers are `nadig25hepg2`, `nadig25jurkat`, `replogle22k562`, and `replogle22rpe1`.
 
@@ -97,31 +128,30 @@ The Systema wrapper does not use the `perturb_2026` stage loader. It requires a 
 
 ## Configuration
 
-The following environment variables override the default data locations:
-
 | Variable | Description |
 |---|---|
 | `TUSOPERTURB_REF_DIR` | Directory containing the pathway, regulatory, and STRING reference files. Defaults to `data/embeddings/ref/` in a source checkout. |
-| `TUSOPERTURB_DEPMAP_DIR` | Directory containing the cell-line DepMap parquet files. Defaults to `data/embeddings/depmap_essentiality/` in a source checkout. |
-| `TUSOPERTURB_MEAN_EFFECT_DIR` | Directory containing the PerturbHD AUCell mean-effect parquet files used by `predict_hit`. |
+| `TUSOPERTURB_DEPMAP_DIR` | Directory containing the cell-line DepMap Parquet files. Defaults to `data/embeddings/depmap_essentiality/` in a source checkout. |
+| `TUSOPERTURB_COESS_DIR` | Directory containing the co-essentiality basis. Defaults to `data/embeddings/coessentiality/` in a source checkout. |
+| `TUSOPERTURB_MEAN_EFFECT_DIR` | Directory containing the PerturbHD AUCell mean-effect Parquet files used by `predict_hit`. |
 
 ## Model
 
-For CellSimBench, scPerturBench, and PerturbHD, TusoPerturb builds an 11,680-dimensional representation for each perturbation from GenePT, Reactome, GO Biological Process, MSigDB Hallmark, PROGENy, CollecTRI, STRING, DepMap, and baseline-expression features.
+Each perturbation is one row of an 8,700-dimensional matrix: Reactome, GO Biological Process, MSigDB Hallmark, PROGENy, CollecTRI, STRING, and DepMap features (8,604 columns) followed by rank-64 and rank-32 co-essentiality coordinates (96 columns). Multi-gene perturbations are combined within each block using block-appropriate sum or mean operations.
 
-Systema uses an 8,604-dimensional representation built from the same static biological resources, without the GenePT and baseline blocks. Multi-gene perturbations are combined within each feature block using block-appropriate sum or mean operations.
+Both heads read every column. Prediction blends a ridge model, a weighted nearest-neighbour target transfer, and a binary-response ridge model. The two heads differ only in head parameters — never in the feature space — and `heads.assert_two_head()` ships as the executable form of that claim.
 
-A benchmark configuration determines the feature subset, scaling, block weights, target transformation, and prediction arms. Depending on the task, the model uses ridge regression alone or a blend of ridge regression, nearest-neighbor target transfer, and a binary-response ridge model. Configurations are defined in [`tusoperturb/heads.py`](tusoperturb/heads.py) and exposed through `HEAD_CONFIGS`.
-
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full feature layout and model details.
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for the full feature layout and prediction pipeline.
 
 ## Repository layout
 
 ```text
 tusoperturb/              Python package and prediction API
 data/embeddings/          Bundled biological reference features
-docs/benchmarks/          Benchmark-specific setup and scoring guides
-scripts/gen_embeddings/   Scripts for regenerating embedding assets
+docs/benchmarks/          Benchmark-specific setup, scoring, and results
+docs/leakage.md           Split-integrity audit of the sealed run
+scripts/gen_embeddings/   Script for rebuilding the co-essentiality basis
+champion/params.json      Frozen configuration and recorded results
 ARCHITECTURE.md           Model and feature-stack documentation
 REPRODUCE.md              Reproduction and validation notes
 ```
@@ -131,7 +161,8 @@ REPRODUCE.md              Reproduction and validation notes
 - [Model architecture](ARCHITECTURE.md)
 - [Benchmark setup guides](docs/benchmarks/README.md)
 - [Reproduction guide](REPRODUCE.md)
-- [Embedding generation](scripts/gen_embeddings/README.md)
+- [Split-integrity audit](docs/leakage.md)
+- [Co-essentiality basis generation](scripts/gen_embeddings/README.md)
 
 ## Citation
 

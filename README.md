@@ -1,5 +1,7 @@
 # TusoPerturb
 
+![](tusoperturb_overview.png)
+
 TusoPerturb is a research Python package for predicting transcriptional responses to genetic perturbations. It combines curated biological annotations with a co-essentiality basis derived from DepMap, and serves CellSimBench, scPerturBench, PerturbHD, and Systema through one prediction framework.
 
 Version 2 replaces the per-benchmark configurations of version 1 with **one feature space and two heads**. The public API is unchanged.
@@ -16,6 +18,8 @@ Version 2 replaces the per-benchmark configurations of version 1 with **one feat
 | External API keys required | OpenAI, for the GenePT block | none |
 
 The 8,700-D space is the seven annotation blocks (8,604 columns) with the co-essentiality blocks appended (96 columns). Dropping GenePT removes the only component that required a paid external service and the only one that could not be regenerated from public files bundled or scripted in this repository.
+
+![](performance_3_plots.png)
 
 ## Overview
 
